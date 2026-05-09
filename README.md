@@ -181,4 +181,4 @@ npm run dev
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE)

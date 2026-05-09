@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, CheckCircle, XCircle, FileText, Loader2 } from 'lucide-react';
+import { Upload, CheckCircle, XCircle, FileText, Loader2, Briefcase, ChevronDown } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { UploadResult as UploadResultType } from '../types';
@@ -9,11 +9,16 @@ export default function UploadPage() {
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadResults, setUploadResults] = useState<UploadResultType[]>([]);
+  const [selectedJdId, setSelectedJdId] = useState<string | null>(null);
+  const [jdDropdownOpen, setJdDropdownOpen] = useState(false);
   const addResume = useAppStore((state) => state.addResume);
   const updateResume = useAppStore((state) => state.updateResume);
   const resumes = useAppStore((state) => state.resumes);
+  const jds = useAppStore((state) => state.jds);
+  const setJDs = useAppStore((state) => state.setJDs);
   const navigate = useNavigate();
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const uploadedIds = uploadResults
     .filter(r => r.success && r.resume)
@@ -22,6 +27,28 @@ export default function UploadPage() {
   const hasParsing = uploadedIds.some(id =>
     resumes.find(r => r.id === id)?.parseStatus === 'parsing'
   );
+
+  useEffect(() => {
+    const loadJDs = async () => {
+      try {
+        const data = await api.getJDs();
+        setJDs(data);
+      } catch {
+        console.log('Failed to load JDs');
+      }
+    };
+    loadJDs();
+  }, [setJDs]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setJdDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const pollParsingResumes = useCallback(async () => {
     for (const id of uploadedIds) {
@@ -63,7 +90,7 @@ export default function UploadPage() {
     setUploadResults([]);
 
     try {
-      const response = await api.uploadResumesBatch(files);
+      const response = await api.uploadResumesBatch(files, selectedJdId || undefined);
       setUploadResults(response.results);
 
       const submittedResumes = response.results
@@ -115,11 +142,72 @@ export default function UploadPage() {
     return current.parseStatus;
   };
 
+  const selectedJd = jds.find(j => j.id === selectedJdId) || null;
+
   return (
     <div className="max-w-3xl mx-auto">
       <div className="text-center mb-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">上传简历</h1>
         <p className="text-gray-600">支持 PDF、DOCX 格式，可同时上传多份</p>
+      </div>
+
+      <div className="mb-6" ref={dropdownRef}>
+        <label className="block text-sm font-medium text-gray-700 mb-2">关联职位（可选）</label>
+        <div className="relative">
+          <button
+            onClick={() => setJdDropdownOpen(!jdDropdownOpen)}
+            className="w-full flex items-center justify-between px-4 py-2.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 transition-colors text-left"
+          >
+            <div className="flex items-center">
+              <Briefcase className="h-4 w-4 text-gray-400 mr-2" />
+              {selectedJd ? (
+                <span className="text-gray-900">{selectedJd.title}</span>
+              ) : (
+                <span className="text-gray-400">选择职位后，上传的简历将自动匹配评分</span>
+              )}
+            </div>
+            <div className="flex items-center space-x-2">
+              {selectedJdId && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setSelectedJdId(null); }}
+                  className="text-gray-400 hover:text-gray-600 text-sm"
+                >
+                  清除
+                </button>
+              )}
+              <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${jdDropdownOpen ? 'rotate-180' : ''}`} />
+            </div>
+          </button>
+          {jdDropdownOpen && (
+            <div className="absolute z-10 mt-1 w-full bg-white rounded-lg shadow-lg border border-gray-200 py-1 max-h-60 overflow-auto">
+              {jds.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-gray-500">
+                  暂无职位，请先在"职位管理"中添加
+                </div>
+              ) : (
+                jds.map((jd) => (
+                  <button
+                    key={jd.id}
+                    onClick={() => { setSelectedJdId(jd.id); setJdDropdownOpen(false); }}
+                    className={`w-full text-left px-4 py-2.5 hover:bg-blue-50 transition-colors ${
+                      selectedJdId === jd.id ? 'bg-blue-50 text-blue-700' : 'text-gray-700'
+                    }`}
+                  >
+                    <div className="font-medium">{jd.title}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {jd.keywords.length} 个关键词
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        {selectedJdId && (
+          <p className="mt-1 text-xs text-green-600">
+            上传后简历将自动解析并匹配「{selectedJd?.title}」
+          </p>
+        )}
       </div>
 
       <div
@@ -168,7 +256,7 @@ export default function UploadPage() {
             <h2 className="text-lg font-semibold text-gray-900">上传结果</h2>
             {successCount > 0 && !hasParsing && (
               <button
-                onClick={() => navigate('/resumes')}
+                onClick={() => navigate(selectedJdId ? `/resumes` : '/resumes')}
                 className="text-sm text-secondary hover:text-blue-600 font-medium"
               >
                 查看简历列表 →
@@ -190,12 +278,12 @@ export default function UploadPage() {
                     {status === 'parsing' ? (
                       <span className="inline-flex items-center text-sm text-amber-600 font-medium">
                         <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                        解析中
+                        {selectedJdId ? '解析并匹配中' : '解析中'}
                       </span>
                     ) : status === 'completed' ? (
                       <span className="inline-flex items-center text-sm text-green-600 font-medium">
                         <CheckCircle className="h-4 w-4 mr-1" />
-                        解析完成
+                        {selectedJdId ? '解析并匹配完成' : '解析完成'}
                       </span>
                     ) : status === 'failed' ? (
                       <span className="inline-flex items-center text-sm text-red-600 font-medium">
@@ -239,13 +327,15 @@ export default function UploadPage() {
             {hasParsing && (
               <span className="text-amber-600 flex items-center">
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                正在解析中，请稍候...
+                {selectedJdId ? '正在解析并匹配，请稍候...' : '正在解析中，请稍候...'}
               </span>
             )}
             {!hasParsing && successCount > 0 && (
               <span className="text-green-600 flex items-center">
                 <CheckCircle className="h-4 w-4 mr-1" />
-                {successCount} 份简历解析完成
+                {selectedJdId
+                  ? `${successCount} 份简历解析并匹配完成`
+                  : `${successCount} 份简历解析完成`}
               </span>
             )}
             {failCount > 0 && (

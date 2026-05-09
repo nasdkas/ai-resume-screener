@@ -19,9 +19,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  uploadResumesBatch: async (files: File[]): Promise<BatchUploadResponse> => {
+  uploadResumesBatch: async (files: File[], jdId?: string): Promise<BatchUploadResponse> => {
     const formData = new FormData();
     files.forEach(file => formData.append('files', file));
+    if (jdId) {
+      formData.append('jdId', jdId);
+    }
 
     const response = await fetch(`${API_BASE}/upload/batch`, {
       method: 'POST',
@@ -90,6 +93,12 @@ export const api = {
 
   getMatchResult: async (resumeId: string, jdId: string): Promise<MatchResult> => {
     return request<MatchResult>(`/match/${resumeId}/${jdId}`);
+  },
+
+  scoreSingleResume: async (resumeId: string, jdId: string): Promise<MatchResult> => {
+    return request<MatchResult>(`/match/${resumeId}/${jdId}`, {
+      method: 'POST',
+    });
   },
 
   getFailedUploads: async (): Promise<FailedUpload[]> => {

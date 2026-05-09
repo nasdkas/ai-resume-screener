@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, FileText, Briefcase, GraduationCap, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, FileText, Briefcase, GraduationCap, CheckCircle, XCircle, Loader2, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { Resume, MatchResult } from '../types';
@@ -15,10 +15,12 @@ export default function ResumeDetailPage() {
   const [resume, setResume] = useState<Resume | null>(null);
   const [loading, setLoading] = useState(true);
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
+  const [scoring, setScoring] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const selectedJdId = useAppStore((state) => state.selectedJdId);
   const jds = useAppStore((state) => state.jds);
+  const setMatchResults = useAppStore((state) => state.setMatchResults);
   const activeJdId = jdIdFromUrl || selectedJdId;
 
   const selectedJd = jds.find(j => j.id === activeJdId) || null;
@@ -83,6 +85,24 @@ export default function ResumeDetailPage() {
       }
     };
   }, [resume?.parseStatus, refreshResume]);
+
+  const handleRescore = async () => {
+    if (!id || !activeJdId) return;
+    setScoring(true);
+    try {
+      const result = await api.scoreSingleResume(id, activeJdId);
+      setMatchResult(result);
+      setMatchResults(prev => [
+        ...prev.filter(m => !(m.resumeId === id && m.jdId === activeJdId)),
+        result
+      ]);
+    } catch (error) {
+      console.error('Rescore failed:', error);
+      alert('评分失败，请重试');
+    } finally {
+      setScoring(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -266,11 +286,30 @@ export default function ResumeDetailPage() {
         <div className="space-y-6">
           {matchResult ? (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center space-x-2 mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">匹配评分</h2>
-                {selectedJd && (
-                  <span className="text-xs text-gray-400">（{selectedJd.title}）</span>
-                )}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center space-x-2">
+                  <h2 className="text-lg font-semibold text-gray-900">匹配评分</h2>
+                  {selectedJd && (
+                    <span className="text-xs text-gray-400">（{selectedJd.title}）</span>
+                  )}
+                </div>
+                <button
+                  onClick={handleRescore}
+                  disabled={scoring}
+                  className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-600 hover:text-blue-600 hover:border-blue-300 transition-colors disabled:opacity-50"
+                >
+                  {scoring ? (
+                    <>
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      评分中...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-3 w-3 mr-1" />
+                      重新评分
+                    </>
+                  )}
+                </button>
               </div>
               <div className="flex justify-center mb-6">
                 <ScoreBadge score={matchResult.overallScore} size="lg" />
@@ -343,9 +382,28 @@ export default function ResumeDetailPage() {
               <p className="text-gray-500">暂无匹配结果</p>
               <p className="text-sm text-gray-400 mt-1">
                 {activeJdId
-                  ? '在简历列表页点击"开始匹配"查看评分'
+                  ? '点击下方按钮开始评分'
                   : '请先选择一个职位，再进行匹配'}
               </p>
+              {activeJdId && !isParsing && !isFailed && (
+                <button
+                  onClick={handleRescore}
+                  disabled={scoring}
+                  className="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-secondary hover:bg-blue-600 transition-colors disabled:opacity-50"
+                >
+                  {scoring ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      评分中...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      开始评分
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           )}
         </div>

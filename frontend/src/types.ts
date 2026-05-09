@@ -13,6 +13,7 @@ export interface Resume {
   keywordMatches: string[];
   missingKeywords: string[];
   parseStatus: 'parsing' | 'completed' | 'failed';
+  jdId?: string;
   createdAt: string;
 }
 

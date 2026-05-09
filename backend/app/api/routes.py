@@ -1,6 +1,6 @@
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
-from typing import List
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Form
+from typing import List, Optional
 from datetime import datetime
 import asyncio
 
@@ -19,7 +19,7 @@ from app.services.storage import (
 )
 from app.services.parser import extract_text
 from app.services.llm_service import async_parse_resume_with_llm
-from app.services.matcher import async_match_all_resumes
+from app.services.matcher import async_match_all_resumes, async_rematch_single_resume
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -39,6 +39,7 @@ def _to_resume(resume: dict) -> Resume:
         keywordMatches=resume.get('keywordMatches', []),
         missingKeywords=resume.get('missingKeywords', []),
         parseStatus=resume.get('parseStatus', 'completed'),
+        jdId=resume.get('jdId'),
         createdAt=datetime.fromisoformat(resume['createdAt'])
     )
 
@@ -70,7 +71,7 @@ def _to_match_result(r: dict) -> MatchResult:
     )
 
 
-async def _parse_resume_background(resume_id: str, raw_text: str, filename: str):
+async def _parse_resume_background(resume_id: str, raw_text: str, filename: str, jd_id: str = None):
     try:
         parsed_data = await async_parse_resume_with_llm(raw_text)
         update_resume(resume_id, {
@@ -78,6 +79,11 @@ async def _parse_resume_background(resume_id: str, raw_text: str, filename: str)
             'parseStatus': 'completed'
         })
         delete_failed_uploads_by_filename(filename)
+        if jd_id:
+            try:
+                await async_rematch_single_resume(resume_id, jd_id)
+            except Exception as e:
+                print(f"自动匹配失败: {e}")
     except Exception as e:
         error_msg = f"解析失败: {str(e)}"
         save_failed_upload(filename, error_msg)
@@ -87,7 +93,7 @@ async def _parse_resume_background(resume_id: str, raw_text: str, filename: str)
         })
 
 
-BATCH_SIZE = 3
+BATCH_SIZE = 2
 
 
 async def _parse_resumes_batch_background(tasks: list):
@@ -97,7 +103,7 @@ async def _parse_resumes_batch_background(tasks: list):
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_resume(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+async def upload_resume(file: UploadFile = File(...), jdId: Optional[str] = Form(None), background_tasks: BackgroundTasks = None):
     file_bytes = await file.read()
     raw_text = extract_text(file_bytes, file.filename)
 
@@ -115,17 +121,18 @@ async def upload_resume(file: UploadFile = File(...), background_tasks: Backgrou
         'experience': 0,
         'education': '',
         'summary': '',
-        'parseStatus': 'parsing'
+        'parseStatus': 'parsing',
+        'jdId': jdId
     }
 
     resume = save_resume(resume_data)
-    background_tasks.add_task(_parse_resume_background, resume['id'], raw_text, file.filename or "未知文件")
+    background_tasks.add_task(_parse_resume_background, resume['id'], raw_text, file.filename or "未知文件", jdId)
 
     return UploadResponse(success=True, resume=_to_resume(resume))
 
 
 @router.post("/upload/batch", response_model=BatchUploadResponse)
-async def upload_resumes_batch(files: List[UploadFile] = File(...), background_tasks: BackgroundTasks = None):
+async def upload_resumes_batch(files: List[UploadFile] = File(...), jdId: Optional[str] = Form(None), background_tasks: BackgroundTasks = None):
     results = []
     parse_tasks = []
     for file in files:
@@ -152,11 +159,12 @@ async def upload_resumes_batch(files: List[UploadFile] = File(...), background_t
                 'experience': 0,
                 'education': '',
                 'summary': '',
-                'parseStatus': 'parsing'
+                'parseStatus': 'parsing',
+                'jdId': jdId
             }
 
             resume = save_resume(resume_data)
-            parse_tasks.append(_parse_resume_background(resume['id'], raw_text, file.filename or "未知文件"))
+            parse_tasks.append(_parse_resume_background(resume['id'], raw_text, file.filename or "未知文件", jdId))
             results.append(UploadResult(
                 filename=file.filename,
                 success=True,
@@ -268,6 +276,15 @@ async def get_match_result(resume_id: str, jd_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="Match result not found")
     return _to_match_result(result)
+
+
+@router.post("/match/{resume_id}/{jd_id}", response_model=MatchResult)
+async def score_single_resume(resume_id: str, jd_id: str):
+    try:
+        result = await async_rematch_single_resume(resume_id, jd_id)
+        return _to_match_result(result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/failed-uploads", response_model=List[FailedUpload])

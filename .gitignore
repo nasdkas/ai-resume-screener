@@ -24,3 +24,5 @@ backend/data/
 
 .DS_Store
 Thumbs.db
+
+test_json_model.py

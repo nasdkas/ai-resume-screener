@@ -166,6 +166,9 @@ def delete_jd(jd_id: str) -> bool:
     data = load_data()
     original_length = len(data.get('jds', []))
     data['jds'] = [j for j in data.get('jds', []) if j['id'] != jd_id]
+    for resume in data.get('resumes', []):
+        if resume.get('jdId') == jd_id:
+            resume['jdId'] = None
     save_data(data)
     results = _load_match_results()
     _save_match_results([m for m in results if m['jdId'] != jd_id])
@@ -213,6 +216,13 @@ def get_match_result_by_resume_id(resume_id: str) -> Optional[Dict[str, Any]]:
 def delete_match_results_by_jd_id(jd_id: str):
     results = _load_match_results()
     _save_match_results([m for m in results if m['jdId'] != jd_id])
+
+
+def delete_match_result(resume_id: str, jd_id: str) -> bool:
+    results = _load_match_results()
+    original_length = len(results)
+    _save_match_results([m for m in results if not (m['resumeId'] == resume_id and m['jdId'] == jd_id)])
+    return len(results) > original_length - 1 and original_length != len(_load_match_results())
 
 
 def save_failed_upload(filename: str, error: str) -> Dict[str, Any]:

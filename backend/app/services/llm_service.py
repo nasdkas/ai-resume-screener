@@ -10,6 +10,8 @@ load_dotenv()
 
 LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'openai').lower()
 MODEL = os.getenv('LLM_MODEL', 'qwen3.5:2b')
+LLM_JSON_MODE = os.getenv('LLM_JSON_MODE', 'false').lower() in ('true', '1', 'yes')
+LLM_THINK_MODE = os.getenv('LLM_THINK_MODE', 'false').lower() in ('true', '1', 'yes')
 
 if LLM_PROVIDER == 'ollama':
     import ollama
@@ -30,49 +32,103 @@ else:
     )
 
 
-def _chat_completion(messages: list, temperature: float = 0.1) -> str:
+PARSE_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "姓名"},
+        "email": {"type": "string", "description": "邮箱"},
+        "phone": {"type": "string", "description": "手机号"},
+        "skills": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "技能列表"
+        },
+        "experience": {"type": "integer", "description": "工作年限"},
+        "education": {"type": "string", "description": "学历"},
+        "summary": {"type": "string", "description": "简历摘要，尽量详尽且不超300字"}
+    },
+    "required": ["name", "email", "phone", "skills", "experience", "education", "summary"]
+}
+
+MATCH_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overallScore": {"type": "integer", "description": "综合评分0-100"},
+        "skillMatch": {"type": "integer", "description": "技能匹配分0-100"},
+        "experienceMatch": {"type": "integer", "description": "经验匹配分0-100"},
+        "educationMatch": {"type": "integer", "description": "学历匹配分0-100"},
+        "keywordMatches": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "简历满足的关键词"
+        },
+        "missingKeywords": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "简历不满足的关键词"
+        },
+        "analysis": {"type": "string", "description": "匹配分析，尽量详尽且不超300字"}
+    },
+    "required": ["overallScore", "skillMatch", "experienceMatch", "educationMatch",
+                 "keywordMatches", "missingKeywords", "analysis"]
+}
+
+
+def _chat_completion(messages: list, temperature: float = 0.1, format: dict = None, think: bool = False) -> str:
     if LLM_PROVIDER == 'ollama':
-        response = _ollama_client.chat(
-            model=MODEL,
-            messages=messages,
-            think=False,
-            options={
+        kwargs = {
+            'model': MODEL,
+            'messages': messages,
+            'think': think,
+            'options': {
                 'temperature': temperature
             }
-        )
+        }
+        if format is not None:
+            kwargs['format'] = format
+        response = _ollama_client.chat(**kwargs)
         print("模型输出：")
         print(response)
         return response.message.content
     else:
-        response = _openai_client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=temperature
-        )
+        kwargs = {
+            'model': MODEL,
+            'messages': messages,
+            'temperature': temperature
+        }
+        if format is not None:
+            kwargs['response_format'] = {"type": "json_object"}
+        response = _openai_client.chat.completions.create(**kwargs)
         print("模型输出：")
         print(response)
         return response.choices[0].message.content
 
 
-async def _async_chat_completion(messages: list, temperature: float = 0.1) -> str:
+async def _async_chat_completion(messages: list, temperature: float = 0.1, format: dict = None, think: bool = False) -> str:
     if LLM_PROVIDER == 'ollama':
-        response = await _ollama_async_client.chat(
-            model=MODEL,
-            messages=messages,
-            think=False,
-            options={
+        kwargs = {
+            'model': MODEL,
+            'messages': messages,
+            'think': think,
+            'options': {
                 'temperature': temperature
             }
-        )
+        }
+        if format is not None:
+            kwargs['format'] = format
+        response = await _ollama_async_client.chat(**kwargs)
         print("模型输出：")
         print(response)
         return response.message.content
     else:
-        response = await _openai_async_client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=temperature
-        )
+        kwargs = {
+            'model': MODEL,
+            'messages': messages,
+            'temperature': temperature
+        }
+        if format is not None:
+            kwargs['response_format'] = {"type": "json_object"}
+        response = await _openai_async_client.chat.completions.create(**kwargs)
         print("模型输出：")
         print(response)
         return response.choices[0].message.content
@@ -97,7 +153,7 @@ def _safe_int(value, default=0) -> int:
     return default
 
 
-PARSE_SYSTEM_MSG = """简历信息提取器，summary内容尽量完善且不超250字，简历中未提到相关内容时，填空。只输出JSON，不输出其他内容。
+PARSE_SYSTEM_MSG = """简历信息提取器，summary内容尽量完善且不超300字，简历中未提到相关内容时，填空。只输出JSON，不输出其他内容。
 示例：李明，8年Java经验，精通Spring Boot、MySQL。本科，liming@example.com，13912345678。
 输出：{"name":"李明","email":"liming@example.com","phone":"13912345678","skills":["Java","Spring Boot","MySQL"],"experience":8,"education":"本科","summary":"8年Java经验的工程师，精通Spring Boot、MySQL，硕士学历。"}"""
 
@@ -105,7 +161,7 @@ PARSE_PROMPT_TEMPLATE = """按示例格式提取。experience为纯数字，今�
 
 {resume_text}"""
 
-MATCH_SYSTEM_MSG = """招聘匹配评估专家，经验是指与岗位匹配的技能经验及相关项目经验，而不单只工作年限；analysis内容尽量完善且不超250字。只输出JSON，不输出其他内容。
+MATCH_SYSTEM_MSG = """你是招聘匹配评估专家，经验是指与岗位匹配的技能经验及相关项目经验，而不单只工作年限；analysis内容尽量完善且不超300字。只输出JSON，不输出其他内容。
 示例：{"overallScore":75,"skillMatch":80,"experienceMatch":70,"educationMatch":90,"keywordMatches":["Java","MySQL"],"missingKeywords":["K8s"],"analysis":"技能匹配良好，缺少K8s经验。经验满足要求。学历符合。"}"""
 
 MATCH_PROMPT_TEMPLATE = """按示例格式评估。overallScore侧重技能(70%)，学历权重极低，分数0-100整数。keywordMatches为简历语义满足的关键词，missingKeywords为简历不满足的关键词。
@@ -118,7 +174,7 @@ JD：{jd_description}
 
 关键词：{keywords}"""
 
-MERGE_PARSE_SYSTEM_MSG = """简历信息合并器，summary内容尽量完善且不超250字。只输出JSON，不输出其他内容。
+MERGE_PARSE_SYSTEM_MSG = """简历信息合并器，summary内容尽量完善且不超300字。只输出JSON，不输出其他内容。
 将两份部分解析结果合并为一份完整结果，按示例格式输出。"""
 
 MERGE_PARSE_PROMPT_TEMPLATE = """合并以下两份部分解析结果。skills取并集去重，experience取最大值，summary合并为更完整的描述，其余字段取非空值。
@@ -126,7 +182,7 @@ MERGE_PARSE_PROMPT_TEMPLATE = """合并以下两份部分解析结果。skills�
 结果1：{first}
 结果2：{second}"""
 
-MERGE_MATCH_SYSTEM_MSG = """匹配结果合并器，经验是指与岗位匹配的技能经验及相关项目经验，而不单只工作年限；analysis内容尽量完善且不超250字。只输出JSON，不输出其他内容。
+MERGE_MATCH_SYSTEM_MSG = """简历评估结果合并器，经验是指与岗位匹配的技能经验及相关项目经验，而不单只工作年限；analysis内容尽量完善且不超300字。只输出JSON，不输出其他内容。
 将两份部分匹配结果合并为一份完整结果，按示例格式输出。"""
 
 MERGE_MATCH_PROMPT_TEMPLATE = """合并以下两份部分匹配结果。skillMatch/experienceMatch/educationMatch取最高分，overallScore按合并结果重算，着重技能与项目经验匹配，keywordMatches取并集去重，missingKeywords只保留两份都缺失的，analysis合并为更完整的评价。
@@ -135,8 +191,8 @@ MERGE_MATCH_PROMPT_TEMPLATE = """合并以下两份部分匹配结果。skillMat
 结果2：{second}"""
 
 
-MAX_PARSE_CHARS = 4000
-MAX_MATCH_CHARS = 3000
+MAX_PARSE_CHARS = 5000
+MAX_MATCH_CHARS = 5000
 
 
 def _format_scoring_criteria(criteria: list) -> str:
@@ -179,7 +235,7 @@ def _llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str,
         {"role": "system", "content": MERGE_PARSE_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(_chat_completion(messages))
+    result_text = _clean_json_response(_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
     result = json.loads(result_text)
     return {
         'name': result.get('name', first.get('name', '未知')),
@@ -201,7 +257,7 @@ async def _async_llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) 
         {"role": "system", "content": MERGE_PARSE_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(await _async_chat_completion(messages))
+    result_text = _clean_json_response(await _async_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
     result = json.loads(result_text)
     return {
         'name': result.get('name', first.get('name', '未知')),
@@ -214,6 +270,24 @@ async def _async_llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) 
     }
 
 
+def _merge_split_keyword_results(first: Dict[str, Any], second: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    first_matched_lower = {kw.lower() for kw in first.get('keywordMatches', [])}
+    second_matched_lower = {kw.lower() for kw in second.get('keywordMatches', [])}
+    all_matched_lower = first_matched_lower | second_matched_lower
+    all_keywords = list(dict.fromkeys(
+        first.get('keywordMatches', []) + first.get('missingKeywords', []) +
+        second.get('keywordMatches', []) + second.get('missingKeywords', [])
+    ))
+    merged_matched = []
+    merged_missing = []
+    for kw in all_keywords:
+        if kw.lower() in all_matched_lower:
+            merged_matched.append(kw)
+        else:
+            merged_missing.append(kw)
+    return merged_matched, merged_missing
+
+
 def _llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
     prompt = MERGE_MATCH_PROMPT_TEMPLATE.format(
         first=json.dumps(first, ensure_ascii=False),
@@ -223,15 +297,16 @@ def _llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str,
         {"role": "system", "content": MERGE_MATCH_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(_chat_completion(messages))
+    result_text = _clean_json_response(_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
     result = json.loads(result_text)
+    merged_matched, merged_missing = _merge_split_keyword_results(first, second)
     return {
         'overallScore': float(result.get('overallScore', 50)),
         'skillMatch': float(result.get('skillMatch', 50)),
         'experienceMatch': float(result.get('experienceMatch', 50)),
         'educationMatch': float(result.get('educationMatch', 50)),
-        'keywordMatches': result.get('keywordMatches', first.get('keywordMatches', [])),
-        'missingKeywords': result.get('missingKeywords', first.get('missingKeywords', [])),
+        'keywordMatches': merged_matched,
+        'missingKeywords': merged_missing,
         'analysis': result.get('analysis', first.get('analysis', ''))
     }
 
@@ -245,15 +320,16 @@ async def _async_llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) 
         {"role": "system", "content": MERGE_MATCH_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(await _async_chat_completion(messages))
+    result_text = _clean_json_response(await _async_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
     result = json.loads(result_text)
+    merged_matched, merged_missing = _merge_split_keyword_results(first, second)
     return {
         'overallScore': float(result.get('overallScore', 50)),
         'skillMatch': float(result.get('skillMatch', 50)),
         'experienceMatch': float(result.get('experienceMatch', 50)),
         'educationMatch': float(result.get('educationMatch', 50)),
-        'keywordMatches': result.get('keywordMatches', first.get('keywordMatches', [])),
-        'missingKeywords': result.get('missingKeywords', first.get('missingKeywords', [])),
+        'keywordMatches': merged_matched,
+        'missingKeywords': merged_missing,
         'analysis': result.get('analysis', first.get('analysis', ''))
     }
 
@@ -323,7 +399,7 @@ def _call_llm_parse(resume_text: str) -> Dict[str, Any]:
         {"role": "system", "content": PARSE_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(_chat_completion(messages))
+    result_text = _clean_json_response(_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
     result = json.loads(result_text)
     return {
         'name': result.get('name', '未知'),
@@ -345,7 +421,7 @@ async def _async_call_llm_parse(resume_text: str) -> Dict[str, Any]:
         {"role": "system", "content": PARSE_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(await _async_chat_completion(messages))
+    result_text = _clean_json_response(await _async_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
     result = json.loads(result_text)
     return {
         'name': result.get('name', '未知'),
@@ -383,7 +459,7 @@ def _call_llm_match(resume_text: str, jd_description: str, keywords: list, scori
         {"role": "system", "content": MATCH_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(_chat_completion(messages))
+    result_text = _clean_json_response(_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
     result = json.loads(result_text)
     text_matched, text_missing = _match_keywords(keywords, resume_text)
     llm_matched = result.get('keywordMatches', [])
@@ -415,7 +491,7 @@ async def _async_call_llm_match(resume_text: str, jd_description: str, keywords:
     ]
     print("match prompt：")
     print(messages)
-    result_text = _clean_json_response(await _async_chat_completion(messages))
+    result_text = _clean_json_response(await _async_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
     result = json.loads(result_text)
     text_matched, text_missing = _match_keywords(keywords, resume_text)
     llm_matched = result.get('keywordMatches', [])

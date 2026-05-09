@@ -17,6 +17,7 @@ class ResumeBase(BaseModel):
     keywordMatches: List[str] = []
     missingKeywords: List[str] = []
     parseStatus: str = "parsing"
+    jdId: Optional[str] = None
 
 
 class ResumeCreate(ResumeBase):

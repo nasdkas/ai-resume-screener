@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Users, Filter, Trash2, Eye, RefreshCw, CheckCircle, XCircle, AlertTriangle, Upload, Clock, Loader2, Briefcase, ChevronDown } from 'lucide-react';
+import { Users, Filter, Trash2, Eye, RefreshCw, CheckCircle, XCircle, AlertTriangle, Upload, Clock, Loader2, Briefcase, ChevronDown, Star } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { FailedUpload } from '../types';
@@ -18,12 +18,11 @@ export default function ResumesPage() {
   const setSelectedJdId = useAppStore((state) => state.setSelectedJdId);
   const removeResume = useAppStore((state) => state.removeResume);
   const [matching, setMatching] = useState(false);
+  const [scoringResumeId, setScoringResumeId] = useState<string | null>(null);
   const [failedUploads, setFailedUploads] = useState<FailedUpload[]>([]);
   const [jdDropdownOpen, setJdDropdownOpen] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-
-  const hasParsing = resumes.some(r => r.parseStatus === 'parsing');
 
   const selectedJd = useMemo(() => {
     return jds.find(j => j.id === selectedJdId) || null;
@@ -33,6 +32,13 @@ export default function ResumesPage() {
     if (!selectedJdId) return [];
     return matchResults.filter(m => m.jdId === selectedJdId);
   }, [matchResults, selectedJdId]);
+
+  const filteredResumes = useMemo(() => {
+    if (!selectedJdId) return resumes;
+    return resumes.filter(r => !r.jdId || r.jdId === selectedJdId);
+  }, [resumes, selectedJdId]);
+
+  const hasParsing = filteredResumes.some(r => r.parseStatus === 'parsing');
 
   const refreshResumes = useCallback(async () => {
     try {
@@ -122,13 +128,13 @@ export default function ResumesPage() {
   };
 
   const sortedResumes = useMemo(() => {
-    if (filteredMatchResults.length === 0) return resumes;
-    return [...resumes].sort((a, b) => {
+    if (filteredMatchResults.length === 0) return filteredResumes;
+    return [...filteredResumes].sort((a, b) => {
       const resultA = filteredMatchResults.find(m => m.resumeId === a.id);
       const resultB = filteredMatchResults.find(m => m.resumeId === b.id);
       return (resultB?.overallScore || 0) - (resultA?.overallScore || 0);
     });
-  }, [resumes, filteredMatchResults]);
+  }, [filteredResumes, filteredMatchResults]);
 
   const handleMatch = async () => {
     if (!selectedJdId || !selectedJd) {
@@ -144,6 +150,27 @@ export default function ResumesPage() {
       console.error('Matching failed:', error);
     } finally {
       setMatching(false);
+    }
+  };
+
+  const handleScoreSingle = async (resumeId: string) => {
+    if (!selectedJdId) {
+      alert('请先选择一个职位');
+      return;
+    }
+
+    setScoringResumeId(resumeId);
+    try {
+      const result = await api.scoreSingleResume(resumeId, selectedJdId);
+      setMatchResults(prev => [
+        ...prev.filter(m => !(m.resumeId === resumeId && m.jdId === selectedJdId)),
+        result
+      ]);
+    } catch (error) {
+      console.error('Score failed:', error);
+      alert('评分失败，请重试');
+    } finally {
+      setScoringResumeId(null);
     }
   };
 
@@ -167,8 +194,8 @@ export default function ResumesPage() {
     }
   };
 
-  const parsingCount = resumes.filter(r => r.parseStatus === 'parsing').length;
-  const completedCount = resumes.filter(r => r.parseStatus === 'completed').length;
+  const parsingCount = filteredResumes.filter(r => r.parseStatus === 'parsing').length;
+  const completedCount = filteredResumes.filter(r => r.parseStatus === 'completed').length;
 
   return (
     <div>
@@ -176,7 +203,7 @@ export default function ResumesPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">简历列表</h1>
           <p className="text-gray-600">
-            共 {resumes.length} 份简历
+            共 {filteredResumes.length} 份简历
             {parsingCount > 0 && (
               <span className="ml-2 text-amber-600">
                 ({parsingCount} 份解析中)
@@ -184,7 +211,7 @@ export default function ResumesPage() {
             )}
           </p>
         </div>
-        {resumes.length > 0 && (
+        {filteredResumes.length > 0 && (
           <button
             onClick={handleMatch}
             disabled={matching || completedCount === 0 || !selectedJdId}
@@ -257,11 +284,15 @@ export default function ResumesPage() {
         )}
       </div>
 
-      {resumes.length === 0 ? (
+      {filteredResumes.length === 0 ? (
         <div className="text-center py-16">
           <Users className="mx-auto h-16 w-16 text-gray-400 mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">还没有简历</h3>
-          <p className="text-gray-500 mb-4">上传简历开始筛选吧</p>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            {selectedJdId ? '该职位下暂无简历' : '还没有简历'}
+          </h3>
+          <p className="text-gray-500 mb-4">
+            {selectedJdId ? '请上传简历并关联该职位' : '上传简历开始筛选吧'}
+          </p>
           <Link
             to="/"
             className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-secondary hover:bg-blue-600"
@@ -277,6 +308,7 @@ export default function ResumesPage() {
             const isFailed = resume.parseStatus === 'failed';
             const resumeKeywords = matchResult?.keywordMatches || [];
             const resumeMissingKeywords = matchResult?.missingKeywords || [];
+            const isScoring = scoringResumeId === resume.id;
             return (
               <div key={resume.id} className={`bg-white rounded-lg shadow-sm border p-6 hover:shadow-md transition-shadow ${isParsing ? 'border-amber-200 bg-amber-50/30' : isFailed ? 'border-red-200 bg-red-50/30' : 'border-gray-200'}`}>
                 <div className="flex items-start justify-between">
@@ -375,6 +407,26 @@ export default function ResumesPage() {
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
+                    {selectedJdId && !isParsing && !isFailed && (
+                      <button
+                        onClick={() => handleScoreSingle(resume.id)}
+                        disabled={isScoring}
+                        className={`p-2 transition-colors ${
+                          matchResult
+                            ? 'text-gray-400 hover:text-blue-500'
+                            : 'text-blue-500 hover:text-blue-600'
+                        }`}
+                        title={matchResult ? '重新评分' : '评分'}
+                      >
+                        {isScoring ? (
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        ) : matchResult ? (
+                          <RefreshCw className="h-5 w-5" />
+                        ) : (
+                          <Star className="h-5 w-5" />
+                        )}
+                      </button>
+                    )}
                     <Link
                       to={`/resumes/${resume.id}${selectedJdId ? `?jdId=${selectedJdId}` : ''}`}
                       className="p-2 text-gray-400 hover:text-secondary transition-colors"
