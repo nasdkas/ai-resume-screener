@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, FileText, Briefcase, GraduationCap, CheckCircle, XCircle, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, FileText, Briefcase, GraduationCap, CheckCircle, XCircle, Loader2, RefreshCw, ThumbsUp, ThumbsDown, Target, FolderOpen } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { Resume, MatchResult } from '../types';
@@ -315,10 +315,10 @@ export default function ResumeDetailPage() {
                 <ScoreBadge score={matchResult.overallScore} size="lg" />
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600">技能匹配</span>
+                    <span className="text-gray-600 flex items-center"><Briefcase className="h-3.5 w-3.5 mr-1.5 text-blue-500" />技能匹配 <span className="text-gray-400 ml-1">(35%)</span></span>
                     <span className="font-medium">{matchResult.skillMatch}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -330,7 +330,7 @@ export default function ResumeDetailPage() {
                 </div>
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600">经验匹配</span>
+                    <span className="text-gray-600 flex items-center"><GraduationCap className="h-3.5 w-3.5 mr-1.5 text-green-500" />经验匹配 <span className="text-gray-400 ml-1">(20%)</span></span>
                     <span className="font-medium">{matchResult.experienceMatch}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -342,7 +342,31 @@ export default function ResumeDetailPage() {
                 </div>
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600">学历匹配</span>
+                    <span className="text-gray-600 flex items-center"><Target className="h-3.5 w-3.5 mr-1.5 text-amber-500" />关键词匹配 <span className="text-gray-400 ml-1">(20%)</span></span>
+                    <span className="font-medium">{matchResult.keywordMatch}%</span>
+                  </div>
+                  <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-amber-500 transition-all"
+                      style={{ width: `${matchResult.keywordMatch}%` }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-600 flex items-center"><FolderOpen className="h-3.5 w-3.5 mr-1.5 text-cyan-500" />项目经验匹配 <span className="text-gray-400 ml-1">(15%)</span></span>
+                    <span className="font-medium">{matchResult.projectMatch}%</span>
+                  </div>
+                  <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-cyan-500 transition-all"
+                      style={{ width: `${matchResult.projectMatch}%` }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-600 flex items-center"><GraduationCap className="h-3.5 w-3.5 mr-1.5 text-purple-500" />学历匹配 <span className="text-gray-400 ml-1">(10%)</span></span>
                     <span className="font-medium">{matchResult.educationMatch}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -376,6 +400,34 @@ export default function ResumeDetailPage() {
                 <h3 className="font-medium text-gray-900 mb-2">AI 分析</h3>
                 <p className="text-sm text-gray-600 leading-relaxed">{matchResult.analysis}</p>
               </div>
+
+              {matchResult.strengths && matchResult.strengths.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-gray-200">
+                  <h3 className="font-medium text-gray-900 mb-2 flex items-center"><ThumbsUp className="h-4 w-4 mr-1.5 text-green-500" />候选人优势</h3>
+                  <ul className="space-y-1.5">
+                    {matchResult.strengths.map((s, i) => (
+                      <li key={i} className="flex items-start text-sm text-green-700">
+                        <CheckCircle className="h-3.5 w-3.5 mr-2 mt-0.5 flex-shrink-0" />
+                        {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {matchResult.weaknesses && matchResult.weaknesses.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-gray-200">
+                  <h3 className="font-medium text-gray-900 mb-2 flex items-center"><ThumbsDown className="h-4 w-4 mr-1.5 text-red-500" />候选人不足</h3>
+                  <ul className="space-y-1.5">
+                    {matchResult.weaknesses.map((w, i) => (
+                      <li key={i} className="flex items-start text-sm text-red-600">
+                        <XCircle className="h-3.5 w-3.5 mr-2 mt-0.5 flex-shrink-0" />
+                        {w}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           ) : (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-center">

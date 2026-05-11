@@ -177,13 +177,24 @@ def delete_jd(jd_id: str) -> bool:
 
 def save_match_result(match_result_data: Dict[str, Any]) -> Dict[str, Any]:
     results = _load_match_results()
-    match_id = str(uuid.uuid4())
+    resume_id = match_result_data.get('resumeId')
+    jd_id = match_result_data.get('jdId')
+    existing_index = None
+    if resume_id and jd_id:
+        for i, r in enumerate(results):
+            if r.get('resumeId') == resume_id and r.get('jdId') == jd_id:
+                existing_index = i
+                break
     match_result = {
-        'id': match_id,
         **match_result_data,
         'createdAt': datetime.now().isoformat()
     }
-    results.append(match_result)
+    if existing_index is not None:
+        match_result['id'] = results[existing_index].get('id', str(uuid.uuid4()))
+        results[existing_index] = match_result
+    else:
+        match_result['id'] = str(uuid.uuid4())
+        results.append(match_result)
     _save_match_results(results)
     return match_result
 

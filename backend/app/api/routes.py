@@ -19,7 +19,7 @@ from app.services.storage import (
 )
 from app.services.parser import extract_text
 from app.services.llm_service import async_parse_resume_with_llm
-from app.services.matcher import async_match_all_resumes, async_rematch_single_resume
+from app.services.matcher import async_match_all_resumes, async_match_single_resume
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -64,8 +64,12 @@ def _to_match_result(r: dict) -> MatchResult:
         skillMatch=r['skillMatch'],
         experienceMatch=r['experienceMatch'],
         educationMatch=r['educationMatch'],
+        keywordMatch=r.get('keywordMatch', 0),
+        projectMatch=r.get('projectMatch', 0),
         keywordMatches=r['keywordMatches'],
         missingKeywords=r['missingKeywords'],
+        strengths=r.get('strengths', []),
+        weaknesses=r.get('weaknesses', []),
         analysis=r['analysis'],
         createdAt=datetime.fromisoformat(r['createdAt'])
     )
@@ -81,7 +85,7 @@ async def _parse_resume_background(resume_id: str, raw_text: str, filename: str,
         delete_failed_uploads_by_filename(filename)
         if jd_id:
             try:
-                await async_rematch_single_resume(resume_id, jd_id)
+                await async_match_single_resume(resume_id, jd_id)
             except Exception as e:
                 print(f"自动匹配失败: {e}")
     except Exception as e:
@@ -281,7 +285,7 @@ async def get_match_result(resume_id: str, jd_id: str):
 @router.post("/match/{resume_id}/{jd_id}", response_model=MatchResult)
 async def score_single_resume(resume_id: str, jd_id: str):
     try:
-        result = await async_rematch_single_resume(resume_id, jd_id)
+        result = await async_match_single_resume(resume_id, jd_id)
         return _to_match_result(result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -56,7 +56,7 @@ npm install
 ```env
 LLM_PROVIDER=ollama
 OLLAMA_HOST=http://localhost:11434
-LLM_MODEL=qwen3.5:4b
+LLM_MODEL=gemma4:e4b
 ```
 
 **使用 OpenAI（云端模型）：**

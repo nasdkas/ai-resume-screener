@@ -34,7 +34,7 @@ class Resume(ResumeBase):
 
 class ScoringCriterion(BaseModel):
     item: str
-    weight: str = "重要"
+    weight: str = "必须"
 
 
 class JDBase(BaseModel):
@@ -70,8 +70,12 @@ class MatchResultBase(BaseModel):
     skillMatch: float
     experienceMatch: float
     educationMatch: float
+    keywordMatch: float = 0
+    projectMatch: float = 0
     keywordMatches: List[str]
     missingKeywords: List[str]
+    strengths: List[str] = []
+    weaknesses: List[str] = []
     analysis: str
 
 

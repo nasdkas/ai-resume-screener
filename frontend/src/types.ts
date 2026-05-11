@@ -39,8 +39,12 @@ export interface MatchResult {
   skillMatch: number;
   experienceMatch: number;
   educationMatch: number;
+  keywordMatch: number;
+  projectMatch: number;
   keywordMatches: string[];
   missingKeywords: string[];
+  strengths: string[];
+  weaknesses: string[];
   analysis: string;
   createdAt: string;
 }

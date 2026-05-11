@@ -13,12 +13,6 @@ interface JDFormData {
 
 const emptyForm: JDFormData = { title: '', description: '', keywords: [], scoringCriteria: [] };
 
-const WEIGHT_OPTIONS = [
-  { value: '必须', label: '必须', color: 'bg-red-100 text-red-800' },
-  { value: '重要', label: '重要', color: 'bg-yellow-100 text-yellow-800' },
-  { value: '加分', label: '加分', color: 'bg-green-100 text-green-800' },
-];
-
 export default function JDPage() {
   const jds = useAppStore((state) => state.jds);
   const setJDs = useAppStore((state) => state.setJDs);
@@ -98,7 +92,7 @@ export default function JDPage() {
       if (!exists) {
         setForm({
           ...form,
-          scoringCriteria: [...form.scoringCriteria, { item: criterionInput.trim(), weight: '重要' }],
+          scoringCriteria: [...form.scoringCriteria, { item: criterionInput.trim(), weight: '必须' }],
         });
       }
       setCriterionInput('');
@@ -107,13 +101,6 @@ export default function JDPage() {
 
   const removeCriterion = (item: string) => {
     setForm({ ...form, scoringCriteria: form.scoringCriteria.filter(c => c.item !== item) });
-  };
-
-  const updateCriterionWeight = (item: string, weight: string) => {
-    setForm({
-      ...form,
-      scoringCriteria: form.scoringCriteria.map(c => c.item === item ? { ...c, weight } : c),
-    });
   };
 
   const handleSave = async () => {
@@ -154,10 +141,6 @@ export default function JDPage() {
   };
 
   const isEditing = isNew || editingId !== null;
-
-  const getWeightColor = (weight: string) => {
-    return WEIGHT_OPTIONS.find(w => w.value === weight)?.color || 'bg-gray-100 text-gray-800';
-  };
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -250,10 +233,10 @@ export default function JDPage() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                评分标准
+                JD必须需求
               </label>
               <p className="text-xs text-gray-500 mb-2">
-                添加评分侧重点，设置权重：必须（不满足则极低分）、重要（显著影响评分）、加分（满足加分，不满足不扣分）
+                添加硬性门槛要求，不满足任意一项则直接极低分
               </p>
               <input
                 type="text"
@@ -261,7 +244,7 @@ export default function JDPage() {
                 onChange={(e) => setCriterionInput(e.target.value)}
                 onKeyDown={addCriterion}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-secondary focus:border-transparent mb-3"
-                placeholder="输入评分标准后按回车添加，如：3年以上Java经验"
+                placeholder="输入必须需求后按回车添加，如：3年以上Java经验"
               />
               {form.scoringCriteria.length > 0 && (
                 <div className="space-y-2">
@@ -270,23 +253,8 @@ export default function JDPage() {
                       key={criterion.item}
                       className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg"
                     >
+                      <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">硬性门槛</span>
                       <span className="flex-1 text-sm text-gray-800">{criterion.item}</span>
-                      <div className="flex items-center gap-1">
-                        {WEIGHT_OPTIONS.map((opt) => (
-                          <button
-                            key={opt.value}
-                            type="button"
-                            onClick={() => updateCriterionWeight(criterion.item, opt.value)}
-                            className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
-                              criterion.weight === opt.value
-                                ? opt.color
-                                : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
                       <button
                         onClick={() => removeCriterion(criterion.item)}
                         className="text-gray-400 hover:text-red-500 transition-colors"
@@ -376,9 +344,9 @@ export default function JDPage() {
                       {jd.scoringCriteria.map((c) => (
                         <span
                           key={c.item}
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getWeightColor(c.weight)}`}
+                          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800"
                         >
-                          {c.weight}：{c.item}
+                          {c.item}
                         </span>
                       ))}
                     </div>
