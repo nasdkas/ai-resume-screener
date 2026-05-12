@@ -4,7 +4,8 @@
 
 ## 功能特性
 
-- 📄 **简历上传与解析** — 支持 PDF、DOCX 格式，AI 自动提取姓名/技能/经验/学历等结构化信息
+- 📄 **简历上传与解析** — 支持 PDF、DOCX、TXT 格式，AI 自动提取姓名/技能/经验/学历等结构化信息
+- 💾 **原文件存储与预览** — 上传简历自动保存原文件，点击文件名可直接预览
 - 📋 **职位描述管理** — 配置职位描述、关键词筛选、自定义评分标准（必须/重要/加分）
 - 🤖 **AI 智能匹配评分** — LLM 驱动的多维度评分（技能/经验/学历），支持评分标准定制
 - 🔍 **关键词语义匹配** — 融合文本精确匹配与 LLM 语义理解，避免同义词遗漏
@@ -19,7 +20,7 @@
 | 前端 | React 18 + TypeScript + Vite + Tailwind CSS + Zustand + React Router |
 | 后端 | Python 3.11+ + FastAPI + Pydantic |
 | LLM | OpenAI API / Ollama（本地部署） |
-| 文档解析 | PyPDF2 + python-docx |
+| 文档解析 | PyPDF2 + python-docx + pdfplumber + PyMuPDF |
 
 ## 快速开始
 
@@ -68,6 +69,12 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 ```
 
+**简历文件存储（可选）：**
+
+```env
+RESUME_STORAGE_DIR=./data/resumes
+```
+
 ### 3. 启动应用
 
 #### 启动后端
@@ -95,10 +102,10 @@ npm run dev
 ```
 
 1. **配置职位** — 进入「职位管理」页面，填写职位描述、关键词和评分标准
-2. **上传简历** — 在「上传简历」页面拖拽或选择文件，支持批量上传
+2. **上传简历** — 在「上传简历」页面拖拽或选择文件，支持批量上传，可选择关联职位自动匹配
 3. **AI 解析** — 上传后自动解析，页面实时显示解析进度和结果
 4. **开始匹配** — 在「简历列表」页面选择职位，点击「开始匹配」
-5. **查看结果** — 按匹配度排序查看简历，点击详情查看完整分析
+5. **查看结果** — 按匹配度排序查看简历，点击详情查看完整分析，可预览简历原文件
 
 ## 项目结构
 
@@ -107,14 +114,14 @@ npm run dev
 ├── frontend/                    # React 前端
 │   ├── src/
 │   │   ├── components/          # 通用组件（Navbar, ScoreBadge, SkillTag）
-│   │   ├── pages/               # 页面组件
-│   │   │   ├── UploadPage.tsx   # 简历上传（轮询解析状态）
-│   │   │   ├── JDPage.tsx       # 职位管理（评分标准配置）
-│   │   │   ├── ResumesPage.tsx  # 简历列表（匹配/排序）
+│   │   ├── pages/              # 页面组件
+│   │   │   ├── UploadPage.tsx     # 简历上传（轮询解析/匹配状态）
+│   │   │   ├── JDPage.tsx         # 职位管理（评分标准配置）
+│   │   │   ├── ResumesPage.tsx    # 简历列表（匹配/排序）
 │   │   │   └── ResumeDetailPage.tsx
-│   │   ├── api.ts               # API 调用封装
-│   │   ├── store.ts             # Zustand 全局状态
-│   │   └── types.ts             # TypeScript 类型定义
+│   │   ├── api.ts              # API 调用封装
+│   │   ├── store.ts            # Zustand 全局状态
+│   │   └── types.ts            # TypeScript 类型定义
 │   └── package.json
 └── backend/                     # FastAPI 后端
     ├── app/
@@ -125,8 +132,9 @@ npm run dev
     │   └── services/
     │       ├── llm_service.py   # LLM 调用（解析/匹配/合并）
     │       ├── matcher.py       # 匹配调度（批量/异步）
-    │       ├── parser.py        # 文件解析（PDF/DOCX）
-    │       └── storage.py       # JSON 文件存储
+    │       ├── parser.py        # 文件解析（PDF/DOCX/TXT）
+    │       ├── storage.py       # JSON 文件存储
+    │       └── file_storage.py  # 简历原文件存储
     ├── data/                    # 数据存储目录
     ├── .env.example             # 环境变量示例
     └── requirements.txt
@@ -138,13 +146,13 @@ npm run dev
 
 针对 Ollama 本地小模型（如 qwen3.5:4b）做了以下优化：
 
-| 策略 | 说明 |
-|------|------|
-| 结构化提示词 + Few-shot | 约束输出为 JSON 格式，通过示例引导模型输出 |
-| 提示词压缩 | 移除冗余 Schema 描述，减少 token 消耗 |
-| 长简历拆分 | Ollama 模式下，解析超 4000 字 / 匹配超 3000 字自动拆分为两次 LLM 调用 |
-| LLM 智能合并 | 拆分后的结果由 LLM 合并，而非简单规则拼接 |
-| Provider 感知 | OpenAI 模式不拆分（大模型上下文足够），Ollama 模式按阈值拆分 |
+| 策略 | 说明                                               |
+|------|--------------------------------------------------|
+| 结构化提示词 + Few-shot | 约束输出为 JSON 格式，通过示例引导模型输出                         |
+| 提示词压缩 | 移除冗余 Schema 描述，减少 token 消耗                       |
+| 长简历拆分 | Ollama 模式下，解析超 5000 字 / 匹配超 5000 字自动拆分为两次 LLM 调用 |
+| LLM 智能合并 | 拆分后的结果由 LLM 合并，而非简单规则拼接                          |
+| Provider 感知 | OpenAI 模式不拆分（大模型上下文足够），Ollama 模式按阈值拆分            |
 
 ### 关键词语义匹配
 
@@ -154,13 +162,16 @@ npm run dev
 - **LLM 语义匹配** — 理解同义词和上下文（如简历写"Spring Boot"，关键词"Java"也能命中）
 - **合并规则** — 任一方式命中即算匹配，两者都缺失才算缺失
 
-### 评分标准定制
+### JD必备技能
 
-每个职位可配置评分标准，支持三级权重：
+每个职位可配置必备技能，不满足时打低分
 
-- **必须**（红色）— 不满足则该项打极低分
-- **重要**（黄色）— 显著影响评分
-- **加分**（绿色）— 满足加分，不满足不扣分
+### 简历原文件管理
+
+- 上传简历时自动保存原文件到配置目录
+- 存储格式：`{resume_id}.{原文件扩展名}`
+- 支持文件预览，无需下载即可查看 PDF 等格式
+- 删除简历时自动清理对应原文件
 
 ## API 概览
 
@@ -169,6 +180,7 @@ npm run dev
 | POST | `/api/upload/batch` | 批量上传简历 |
 | GET | `/api/resumes` | 获取简历列表 |
 | GET | `/api/resumes/{id}` | 获取简历详情 |
+| GET | `/api/resumes/{id}/file` | 获取简历原文件（预览） |
 | DELETE | `/api/resumes/{id}` | 删除简历 |
 | POST | `/api/jds` | 创建职位 |
 | GET | `/api/jds` | 获取职位列表 |
@@ -176,6 +188,9 @@ npm run dev
 | DELETE | `/api/jds/{id}` | 删除职位 |
 | POST | `/api/match` | 执行匹配 |
 | GET | `/api/matches/{jd_id}` | 获取匹配结果 |
+| GET | `/api/matches` | 获取所有匹配结果 |
+| GET | `/api/match/{resume_id}/{jd_id}` | 获取单个匹配结果 |
+| POST | `/api/match/{resume_id}/{jd_id}` | 对单个简历重新评分 |
 
 完整 API 文档请访问 http://localhost:8000/docs
 
