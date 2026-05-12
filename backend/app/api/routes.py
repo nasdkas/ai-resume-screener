@@ -1,5 +1,6 @@
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Form
+from fastapi.responses import FileResponse
 from typing import List, Optional
 from datetime import datetime
 import asyncio
@@ -20,6 +21,7 @@ from app.services.storage import (
 from app.services.parser import extract_text
 from app.services.llm_service import async_parse_resume_with_llm
 from app.services.matcher import async_match_all_resumes, async_match_single_resume
+from app.services.file_storage import save_resume_file, get_resume_file_info, delete_resume_file
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -28,6 +30,7 @@ def _to_resume(resume: dict) -> Resume:
     return Resume(
         id=resume['id'],
         filename=resume['filename'],
+        originalFilename=resume.get('originalFilename'),
         name=resume['name'],
         email=resume['email'],
         phone=resume['phone'],
@@ -39,6 +42,7 @@ def _to_resume(resume: dict) -> Resume:
         keywordMatches=resume.get('keywordMatches', []),
         missingKeywords=resume.get('missingKeywords', []),
         parseStatus=resume.get('parseStatus', 'completed'),
+        matchStatus=resume.get('matchStatus'),
         jdId=resume.get('jdId'),
         createdAt=datetime.fromisoformat(resume['createdAt'])
     )
@@ -80,14 +84,17 @@ async def _parse_resume_background(resume_id: str, raw_text: str, filename: str,
         parsed_data = await async_parse_resume_with_llm(raw_text)
         update_resume(resume_id, {
             **parsed_data,
-            'parseStatus': 'completed'
+            'parseStatus': 'completed',
+            'matchStatus': 'matching' if jd_id else None
         })
         delete_failed_uploads_by_filename(filename)
         if jd_id:
             try:
                 await async_match_single_resume(resume_id, jd_id)
+                update_resume(resume_id, {'matchStatus': 'completed'})
             except Exception as e:
                 print(f"自动匹配失败: {e}")
+                update_resume(resume_id, {'matchStatus': 'failed'})
     except Exception as e:
         error_msg = f"解析失败: {str(e)}"
         save_failed_upload(filename, error_msg)
@@ -117,6 +124,7 @@ async def upload_resume(file: UploadFile = File(...), jdId: Optional[str] = Form
 
     resume_data = {
         'filename': file.filename or "未知文件",
+        'originalFilename': file.filename or "未知文件",
         'rawText': raw_text,
         'name': '解析中...',
         'email': '',
@@ -130,6 +138,9 @@ async def upload_resume(file: UploadFile = File(...), jdId: Optional[str] = Form
     }
 
     resume = save_resume(resume_data)
+    
+    save_resume_file(resume['id'], file_bytes, file.filename or "未知文件")
+    
     background_tasks.add_task(_parse_resume_background, resume['id'], raw_text, file.filename or "未知文件", jdId)
 
     return UploadResponse(success=True, resume=_to_resume(resume))
@@ -155,6 +166,7 @@ async def upload_resumes_batch(files: List[UploadFile] = File(...), jdId: Option
 
             resume_data = {
                 'filename': file.filename or "未知文件",
+                'originalFilename': file.filename or "未知文件",
                 'rawText': raw_text,
                 'name': '解析中...',
                 'email': '',
@@ -168,6 +180,7 @@ async def upload_resumes_batch(files: List[UploadFile] = File(...), jdId: Option
             }
 
             resume = save_resume(resume_data)
+            save_resume_file(resume['id'], file_bytes, file.filename or "未知文件")
             parse_tasks.append(_parse_resume_background(resume['id'], raw_text, file.filename or "未知文件", jdId))
             results.append(UploadResult(
                 filename=file.filename,
@@ -208,7 +221,26 @@ async def delete_resume_endpoint(resume_id: str):
     success = delete_resume(resume_id)
     if not success:
         raise HTTPException(status_code=404, detail="Resume not found")
+    delete_resume_file(resume_id)
     return {"success": True}
+
+
+@router.get("/resumes/{resume_id}/file")
+async def get_resume_file(resume_id: str):
+    resume = get_resume_by_id(resume_id)
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    
+    file_info = get_resume_file_info(resume_id)
+    if not file_info:
+        raise HTTPException(status_code=404, detail="Resume file not found")
+    
+    file_path, mime_type = file_info
+    
+    return FileResponse(
+        path=file_path,
+        media_type=mime_type
+    )
 
 
 @router.post("/jds", response_model=JD)

@@ -24,9 +24,13 @@ export default function UploadPage() {
     .filter(r => r.success && r.resume)
     .map(r => r.resume!.id);
 
-  const hasParsing = uploadedIds.some(id =>
-    resumes.find(r => r.id === id)?.parseStatus === 'parsing'
-  );
+  const hasParsing = uploadedIds.some(id => {
+    const resume = resumes.find(r => r.id === id);
+    if (!resume) return false;
+    if (resume.parseStatus === 'parsing') return true;
+    if (resume.jdId && resume.matchStatus === 'matching') return true;
+    return false;
+  });
 
   useEffect(() => {
     const loadJDs = async () => {
@@ -53,10 +57,13 @@ export default function UploadPage() {
   const pollParsingResumes = useCallback(async () => {
     for (const id of uploadedIds) {
       const current = resumes.find(r => r.id === id);
-      if (!current || current.parseStatus !== 'parsing') continue;
+      if (!current) continue;
+      const isParsing = current.parseStatus === 'parsing';
+      const isMatching = current.jdId && current.matchStatus === 'matching';
+      if (!isParsing && !isMatching) continue;
       try {
         const fresh = await api.getResume(id);
-        if (fresh.parseStatus !== 'parsing') {
+        if (fresh.parseStatus !== current.parseStatus || fresh.matchStatus !== current.matchStatus) {
           updateResume(id, fresh);
         }
       } catch {
@@ -139,6 +146,9 @@ export default function UploadPage() {
     if (!result.success || !result.resume) return 'failed';
     const current = resumes.find(r => r.id === result.resume!.id);
     if (!current) return 'parsing';
+    if (current.parseStatus === 'parsing') return 'parsing';
+    if (current.jdId && current.matchStatus === 'matching') return 'matching';
+    if (current.jdId && current.matchStatus === 'failed') return 'match_failed';
     return current.parseStatus;
   };
 
@@ -278,12 +288,22 @@ export default function UploadPage() {
                     {status === 'parsing' ? (
                       <span className="inline-flex items-center text-sm text-amber-600 font-medium">
                         <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                        {selectedJdId ? '解析并匹配中' : '解析中'}
+                        解析中
+                      </span>
+                    ) : status === 'matching' ? (
+                      <span className="inline-flex items-center text-sm text-amber-600 font-medium">
+                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                        匹配评分中
                       </span>
                     ) : status === 'completed' ? (
                       <span className="inline-flex items-center text-sm text-green-600 font-medium">
                         <CheckCircle className="h-4 w-4 mr-1" />
                         {selectedJdId ? '解析并匹配完成' : '解析完成'}
+                      </span>
+                    ) : status === 'match_failed' ? (
+                      <span className="inline-flex items-center text-sm text-red-600 font-medium">
+                        <XCircle className="h-4 w-4 mr-1" />
+                        匹配失败
                       </span>
                     ) : status === 'failed' ? (
                       <span className="inline-flex items-center text-sm text-red-600 font-medium">
@@ -327,7 +347,7 @@ export default function UploadPage() {
             {hasParsing && (
               <span className="text-amber-600 flex items-center">
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                {selectedJdId ? '正在解析并匹配，请稍候...' : '正在解析中，请稍候...'}
+                正在处理中，请稍候...
               </span>
             )}
             {!hasParsing && successCount > 0 && (

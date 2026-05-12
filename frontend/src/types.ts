@@ -2,6 +2,7 @@
 export interface Resume {
   id: string;
   filename: string;
+  originalFilename?: string;
   name: string;
   email: string;
   phone: string;
@@ -13,6 +14,7 @@ export interface Resume {
   keywordMatches: string[];
   missingKeywords: string[];
   parseStatus: 'parsing' | 'completed' | 'failed';
+  matchStatus?: 'matching' | 'completed' | 'failed';
   jdId?: string;
   createdAt: string;
 }

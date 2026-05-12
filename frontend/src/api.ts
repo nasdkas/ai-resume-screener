@@ -108,4 +108,8 @@ export const api = {
   deleteFailedUpload: async (id: string): Promise<{ success: boolean }> => {
     return request<{ success: boolean }>(`/failed-uploads/${id}`, { method: 'DELETE' });
   },
+
+  getResumeFileUrl: (id: string): string => {
+    return `${API_BASE}/resumes/${id}/file`;
+  },
 };

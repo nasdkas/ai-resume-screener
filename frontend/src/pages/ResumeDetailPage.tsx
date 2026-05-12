@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, FileText, Briefcase, GraduationCap, CheckCircle, XCircle, Loader2, RefreshCw, ThumbsUp, ThumbsDown, Target, FolderOpen } from 'lucide-react';
+import { ArrowLeft, FileText, Briefcase, GraduationCap, CheckCircle, XCircle, Loader2, RefreshCw, ThumbsUp, ThumbsDown, Target, FolderOpen, ExternalLink } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { Resume, MatchResult } from '../types';
@@ -181,7 +181,15 @@ export default function ResumeDetailPage() {
                     </span>
                   )}
                 </div>
-                <p className="text-gray-400 text-sm">{resume.filename}</p>
+                <button
+                  onClick={() => window.open(api.getResumeFileUrl(resume.id), '_blank')}
+                  className="flex items-center text-gray-400 text-sm hover:text-blue-500 transition-colors group"
+                  title="点击预览简历原文件"
+                >
+                  <FileText className="h-3.5 w-3.5 mr-1" />
+                  <span className="group-hover:underline">{resume.originalFilename || resume.filename}</span>
+                  <ExternalLink className="h-3 w-3 ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
                 {!isParsing && !isFailed && (
                   <>
                     <p className="text-gray-500">{resume.email}</p>

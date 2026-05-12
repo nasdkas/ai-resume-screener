@@ -6,6 +6,7 @@ from datetime import datetime
 
 class ResumeBase(BaseModel):
     filename: str
+    originalFilename: Optional[str] = None
     name: str
     email: str
     phone: str
@@ -17,6 +18,7 @@ class ResumeBase(BaseModel):
     keywordMatches: List[str] = []
     missingKeywords: List[str] = []
     parseStatus: str = "parsing"
+    matchStatus: Optional[str] = None
     jdId: Optional[str] = None
 
 
