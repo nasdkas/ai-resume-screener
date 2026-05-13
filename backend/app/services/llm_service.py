@@ -8,7 +8,7 @@ import datetime
 
 from .scoring import (
     SCORING_VERSION, DIMENSIONS, DIMENSION_KEYS, SCORE_BANDS,
-    HARD_THRESHOLD_CAP, KEYWORD_WEIGHTS, DEFAULT_KEYWORD_IMPORTANCE,
+    HARD_THRESHOLD_CAP,
     calc_overall_score, clamp_score, get_score_band, calc_confidence,
     format_dimensions_for_prompt, format_bands_for_prompt,
     format_anchors_for_prompt, format_weights_for_prompt,
@@ -248,31 +248,17 @@ def _split_resume(text: str) -> Tuple[str, str]:
 def _format_scoring_criteria(criteria: list) -> str:
     if not criteria:
         return "无特殊要求，按默认权重评估"
-    must_lines = []
-    prefer_lines = []
-    for c in criteria:
-        item = c.get('item', '') if isinstance(c, dict) else str(c)
-        weight = c.get('weight', '必须') if isinstance(c, dict) else '必须'
-        if weight == '必须':
-            must_lines.append(f"- {item}")
-        else:
-            prefer_lines.append(f"- {item}")
-    parts = []
-    if must_lines:
-        parts.append("【必须满足】（任意一项不满足则直接低分）：\n" + '\n'.join(must_lines))
-    if prefer_lines:
-        parts.append("【优先考虑】（满足更佳）：\n" + '\n'.join(prefer_lines))
-    return '\n\n'.join(parts) if parts else "无特殊要求"
+    lines = [f"- {c.get('item', '') if isinstance(c, dict) else str(c)}" for c in criteria]
+    return "【必须满足】（任意一项不满足则直接低分）：\n" + '\n'.join(lines)
 
 
 def _get_must_have_criteria(scoring_criteria: list) -> list:
-    """Extract only '必须' (must-have) criteria items."""
+    """Extract must-have criteria items."""
     if not scoring_criteria:
         return []
     return [
         c.get('item', '') if isinstance(c, dict) else str(c)
         for c in scoring_criteria
-        if (c.get('weight', '必须') if isinstance(c, dict) else '必须') == '必须'
     ]
 
 
@@ -385,28 +371,17 @@ def _merge_keyword_results(text_matched: List[str], text_missing: List[str],
     return merged_matched, merged_missing
 
 
-def _calc_weighted_keyword_score(keywords: List[str], scoring_criteria: list,
-                                 resume_text: str) -> Tuple[float, List[str], List[str]]:
-    """Keyword score weighted by importance. Returns (score_0_100, matched, missing)."""
+def _calc_keyword_score(keywords: List[str],
+                        resume_text: str) -> Tuple[float, List[str], List[str]]:
+    """Simple text-based keyword match ratio. Returns (score_0_100, matched, missing)."""
     if not keywords:
         return 100.0, [], []
 
-    importance_map = {}
-    for c in (scoring_criteria or []):
-        item = c.get('item', '') if isinstance(c, dict) else str(c)
-        weight = c.get('weight', '必须') if isinstance(c, dict) else '必须'
-        importance_map[item.lower()] = weight
-
     resume_lower = resume_text.lower()
-    total_weight = 0.0
-    matched_weight = 0.0
     matched = []
     missing = []
 
     for kw in keywords:
-        importance = importance_map.get(kw.lower(), DEFAULT_KEYWORD_IMPORTANCE)
-        w = KEYWORD_WEIGHTS.get(importance, 1.0)
-
         kw_lower = kw.lower()
         kw_words = kw_lower.split()
         if len(kw_words) > 1:
@@ -417,15 +392,12 @@ def _calc_weighted_keyword_score(keywords: List[str], scoring_criteria: list,
             is_match = bool(re.search(r'\b' + re.escape(kw_lower) + r'\b', resume_lower))
 
         if is_match:
-            matched_weight += w
             matched.append(kw)
         else:
             missing.append(kw)
-        total_weight += w
 
-    if total_weight == 0:
-        return 100.0, matched, missing
-    return (matched_weight / total_weight * 100), matched, missing
+    score = (len(matched) / len(keywords)) * 100 if keywords else 100.0
+    return score, matched, missing
 
 
 def _merge_split_keyword_results(first: Dict[str, Any], second: Dict[str, Any]) -> Tuple[List[str], List[str]]:
@@ -666,12 +638,10 @@ def _parse_match_result(result_text: str, keywords: list, resume_text: str,
     result['keywordMatches'] = merged_matched
     result['missingKeywords'] = merged_missing
 
-    # Weighted keyword score blended with LLM judgment (50/50)
-    weighted_kw_score, _, _ = _calc_weighted_keyword_score(
-        keywords, scoring_criteria or [], resume_text
-    )
+    # Text keyword ratio blended with LLM semantic score (50/50)
+    text_kw_score, _, _ = _calc_keyword_score(keywords, resume_text)
     llm_kw_score = clamp_score(_safe_float(result.get('keywordMatch'), 50))
-    result['keywordMatch'] = round(weighted_kw_score * 0.5 + llm_kw_score * 0.5)
+    result['keywordMatch'] = round(text_kw_score * 0.5 + llm_kw_score * 0.5)
 
     # Detect LLM threshold judgment
     llm_all_low = all(
