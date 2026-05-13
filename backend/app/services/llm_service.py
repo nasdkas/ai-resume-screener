@@ -2,9 +2,12 @@ import os
 import json
 import re
 import asyncio
+import logging
 from typing import Dict, Any, List, Tuple, Optional
 from dotenv import load_dotenv
 import datetime
+
+logger = logging.getLogger(__name__)
 
 from .scoring import (
     SCORING_VERSION, DIMENSIONS, DIMENSION_KEYS, SCORE_BANDS,
@@ -128,8 +131,8 @@ def _chat_completion(messages: list, temperature: float = 0.1, format: dict = No
         if format is not None:
             kwargs['format'] = format
         response = _ollama_client.chat(**kwargs)
-        print("模型输出：")
-        print(response)
+        logger.debug("模型输出：")
+        logger.debug(response)
         return response.message.content
     else:
         kwargs = {
@@ -140,8 +143,8 @@ def _chat_completion(messages: list, temperature: float = 0.1, format: dict = No
         if format is not None:
             kwargs['response_format'] = {"type": "json_object"}
         response = _openai_client.chat.completions.create(**kwargs)
-        print("模型输出：")
-        print(response)
+        logger.debug("模型输出：")
+        logger.debug(response)
         return response.choices[0].message.content
 
 
@@ -156,8 +159,8 @@ async def _async_chat_completion(messages: list, temperature: float = 0.1, forma
         if format is not None:
             kwargs['format'] = format
         response = await _ollama_async_client.chat(**kwargs)
-        print("模型输出：")
-        print(response)
+        logger.debug("模型输出：")
+        logger.debug(response)
         return response.message.content
     else:
         kwargs = {
@@ -168,8 +171,8 @@ async def _async_chat_completion(messages: list, temperature: float = 0.1, forma
         if format is not None:
             kwargs['response_format'] = {"type": "json_object"}
         response = await _openai_async_client.chat.completions.create(**kwargs)
-        print("模型输出：")
-        print(response)
+        logger.debug("模型输出：")
+        logger.debug(response)
         return response.choices[0].message.content
 
 
@@ -638,10 +641,10 @@ def _parse_match_result(result_text: str, keywords: list, resume_text: str,
     result['keywordMatches'] = merged_matched
     result['missingKeywords'] = merged_missing
 
-    # Text keyword ratio blended with LLM semantic score (50/50)
+    # Text keyword ratio as the primary score (LLM keyword assessment is
+    # already captured via keywordMatches/missingKeywords merge above)
     text_kw_score, _, _ = _calc_keyword_score(keywords, resume_text)
-    llm_kw_score = clamp_score(_safe_float(result.get('keywordMatch'), 50))
-    result['keywordMatch'] = round(text_kw_score * 0.5 + llm_kw_score * 0.5)
+    result['keywordMatch'] = round(text_kw_score)
 
     # Detect LLM threshold judgment
     llm_all_low = all(
@@ -748,8 +751,8 @@ def _call_llm_match(resume_text: str, jd_description: str, keywords: list,
     messages = _build_match_messages(
         resume_text, jd_description, keywords, scoring_criteria, threshold_result
     )
-    print("评分提示词：")
-    print(messages[-1]['content'] if messages else "")
+    logger.debug("评分提示词：")
+    logger.debug(messages[-1]['content'] if messages else "")
     result_text = _chat_completion(
         messages,
         format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None,
@@ -772,11 +775,11 @@ async def _async_call_llm_match(resume_text: str, jd_description: str, keywords:
     messages = _build_match_messages(
         resume_text, jd_description, keywords, scoring_criteria, threshold_result
     )
-    print("评分提示词：")
+    logger.debug("评分提示词：")
     for message in messages:
-        print("role：", message['role'])
-        print("content", message['content'])
-        print('-'*100+'\n')
+        logger.debug("role: %s", message['role'])
+        logger.debug("content: %s", message['content'])
+        logger.debug("-" * 80)
     result_text = await _async_chat_completion(
         messages,
         format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None,
@@ -850,7 +853,7 @@ def parse_resume_with_llm(resume_text: str) -> Dict[str, Any]:
         second_result = _call_llm_parse(second_half)
         return _llm_merge_parse(first_result, second_result)
     except Exception as e:
-        print(f"LLM解析错误: {e}")
+        logger.error("LLM解析错误: %s", e)
         raise RuntimeError(f"简历解析失败: {e}")
 
 
@@ -886,7 +889,7 @@ def match_resume_with_jd(resume_text: str, jd_description: str, keywords: list,
         )
         return _llm_merge_match(first_result, second_result)
     except Exception as e:
-        print(f"LLM匹配错误: {e}")
+        logger.error("LLM匹配错误: %s", e)
         raise RuntimeError(f"简历匹配失败: {e}")
 
 
@@ -902,7 +905,7 @@ async def async_parse_resume_with_llm(resume_text: str) -> Dict[str, Any]:
         )
         return await _async_llm_merge_parse(first_result, second_result)
     except Exception as e:
-        print(f"LLM异步解析错误: {e}")
+        logger.error("LLM异步解析错误: %s", e)
         raise RuntimeError(f"简历解析失败: {e}")
 
 
@@ -940,5 +943,5 @@ async def async_match_resume_with_jd(resume_text: str, jd_description: str, keyw
         )
         return await _async_llm_merge_match(first_result, second_result)
     except Exception as e:
-        print(f"LLM异步匹配错误: {e}")
+        logger.error("LLM异步匹配错误: %s", e)
         raise RuntimeError(f"简历匹配失败: {e}")

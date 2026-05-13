@@ -1,28 +1,39 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Filter, Trash2, Eye, RefreshCw, CheckCircle, XCircle, AlertTriangle, Upload, Clock, Loader2, Briefcase, ChevronDown, Star } from 'lucide-react';
+import { usePolling } from '../hooks/usePolling';
 import { api } from '../api';
 import { useAppStore } from '../store';
+import { toast } from '../lib/toast';
+import { confirmAsync } from '../components/ConfirmDialog';
 import { FailedUpload } from '../types';
 import ScoreBadge from '../components/ScoreBadge';
 import SkillTag from '../components/SkillTag';
+import Pagination from '../components/Pagination';
+
+const PAGE_SIZE = 10;
 
 export default function ResumesPage() {
   const resumes = useAppStore((state) => state.resumes);
+  const resumeTotal = useAppStore((state) => state.resumeTotal);
   const jds = useAppStore((state) => state.jds);
   const selectedJdId = useAppStore((state) => state.selectedJdId);
   const matchResults = useAppStore((state) => state.matchResults);
   const setResumes = useAppStore((state) => state.setResumes);
+  const setResumeTotal = useAppStore((state) => state.setResumeTotal);
   const setMatchResults = useAppStore((state) => state.setMatchResults);
   const setJDs = useAppStore((state) => state.setJDs);
   const setSelectedJdId = useAppStore((state) => state.setSelectedJdId);
   const removeResume = useAppStore((state) => state.removeResume);
+  const updateResume = useAppStore((state) => state.updateResume);
   const [matching, setMatching] = useState(false);
+  const [matchProgress, setMatchProgress] = useState<{ total: number; completed: number } | null>(null);
   const [scoringResumeId, setScoringResumeId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [failedUploads, setFailedUploads] = useState<FailedUpload[]>([]);
   const [jdDropdownOpen, setJdDropdownOpen] = useState(false);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [page, setPage] = useState(1);
 
   const selectedJd = useMemo(() => {
     return jds.find(j => j.id === selectedJdId) || null;
@@ -33,71 +44,94 @@ export default function ResumesPage() {
     return matchResults.filter(m => m.jdId === selectedJdId);
   }, [matchResults, selectedJdId]);
 
-  const filteredResumes = useMemo(() => {
-    if (!selectedJdId) return resumes;
-    return resumes.filter(r => !r.jdId || r.jdId === selectedJdId);
-  }, [resumes, selectedJdId]);
+  const hasParsing = resumes.some(r => r.parseStatus === 'parsing');
 
-  const hasParsing = filteredResumes.some(r => r.parseStatus === 'parsing');
-
-  const refreshResumes = useCallback(async () => {
-    try {
-      const data = await api.getResumes();
-      setResumes(data);
-    } catch (error) {
-      console.error('Failed to refresh resumes:', error);
-    }
-  }, [setResumes]);
+  const fetchResumes = useCallback(async (p: number) => {
+    const data = await api.getResumes({ page: p, pageSize: PAGE_SIZE, jdId: selectedJdId || undefined });
+    setResumes(data.items);
+    setResumeTotal(data.total);
+    return data;
+  }, [selectedJdId, setResumes, setResumeTotal]);
 
   useEffect(() => {
-    const loadData = async () => {
+    let cancelled = false;
+    const init = async () => {
       try {
-        const data = await api.getResumes();
-        setResumes(data);
-      } catch (error) {
-        console.error('Failed to load resumes:', error);
+        await fetchResumes(1);
+        if (cancelled) return;
+        setPage(1);
+      } catch {
+        if (cancelled) return;
+        toast.error('加载简历失败');
       }
       try {
         const jdData = await api.getJDs();
-        setJDs(jdData);
-      } catch {
-        console.log('No JDs found');
-      }
+        if (!cancelled) setJDs(jdData.items);
+      } catch { /* no JDs */ }
       try {
         const matchData = await api.getAllMatchResults();
-        setMatchResults(matchData);
-      } catch {
-        console.log('No match results found');
-      }
+        if (!cancelled) setMatchResults(matchData);
+      } catch { /* no match results */ }
       try {
         const failedData = await api.getFailedUploads();
-        setFailedUploads(failedData);
-      } catch {
-        console.log('No failed uploads found');
-      }
+        if (!cancelled) setFailedUploads(failedData);
+      } catch { /* no failed uploads */ }
     };
-    loadData();
-  }, [setResumes, setJDs, setMatchResults]);
+    init();
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Refetch when selectedJdId changes (e.g. JD dropdown selection)
   useEffect(() => {
-    if (hasParsing) {
-      if (pollingRef.current) return;
-      pollingRef.current = setInterval(() => {
-        refreshResumes();
-      }, 3000);
-    } else {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
+    fetchResumes(1).then(() => setPage(1)).catch(() => {});
+  }, [selectedJdId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sortedResumes = useMemo(() => {
+    if (filteredMatchResults.length === 0) return resumes;
+    return [...resumes].sort((a, b) => {
+      const resultA = filteredMatchResults.find(m => m.resumeId === a.id);
+      const resultB = filteredMatchResults.find(m => m.resumeId === b.id);
+      return (resultB?.overallScore || 0) - (resultA?.overallScore || 0);
+    });
+  }, [resumes, filteredMatchResults]);
+
+  const loadMatchResultsForJd = async (jdId: string) => {
+    try {
+      const results = await api.getMatchResultsByJd(jdId);
+      setMatchResults(prev => [...prev.filter(m => m.jdId !== jdId), ...results]);
+    } catch { /* no match results for this JD */ }
+  };
+
+  const handleSelectJd = async (jdId: string) => {
+    setSelectedJdId(jdId);
+    setJdDropdownOpen(false);
+    setPage(1);
+    try {
+      const data = await api.getResumes({ page: 1, pageSize: PAGE_SIZE, jdId });
+      setResumes(data.items);
+      setResumeTotal(data.total);
+    } catch {
+      toast.error('加载简历失败');
     }
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [hasParsing, refreshResumes]);
+    const hasResultsForJd = matchResults.some(m => m.jdId === jdId);
+    if (!hasResultsForJd) {
+      loadMatchResultsForJd(jdId);
+    }
+  };
+
+  usePolling(() => {
+    fetchResumes(page);
+  }, hasParsing);
+
+  usePolling(async () => {
+    if (!selectedJdId) return;
+    try {
+      const progress = await api.getMatchProgress(selectedJdId);
+      setMatchProgress(progress);
+    } catch {
+      // progress endpoint unavailable yet
+    }
+  }, matching && !!selectedJdId);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -109,79 +143,77 @@ export default function ResumesPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleSelectJd = (jdId: string) => {
-    setSelectedJdId(jdId);
-    setJdDropdownOpen(false);
-    const hasResultsForJd = matchResults.some(m => m.jdId === jdId);
-    if (!hasResultsForJd) {
-      loadMatchResultsForJd(jdId);
-    }
-  };
-
-  const loadMatchResultsForJd = async (jdId: string) => {
-    try {
-      const results = await api.getMatchResultsByJd(jdId);
-      setMatchResults(prev => [...prev.filter(m => m.jdId !== jdId), ...results]);
-    } catch {
-      console.log('No match results for this JD');
-    }
-  };
-
-  const sortedResumes = useMemo(() => {
-    if (filteredMatchResults.length === 0) return filteredResumes;
-    return [...filteredResumes].sort((a, b) => {
-      const resultA = filteredMatchResults.find(m => m.resumeId === a.id);
-      const resultB = filteredMatchResults.find(m => m.resumeId === b.id);
-      return (resultB?.overallScore || 0) - (resultA?.overallScore || 0);
-    });
-  }, [filteredResumes, filteredMatchResults]);
-
   const handleMatch = async () => {
     if (!selectedJdId || !selectedJd) {
-      alert('请先选择一个职位');
+      toast.warning('请先选择一个职位');
       return;
     }
 
     setMatching(true);
+    setMatchProgress(null);
     try {
       const response = await api.matchResumes({ jdId: selectedJdId });
+      toast.success(`匹配完成，共 ${response.results.length} 份简历`);
       setMatchResults(prev => [...prev.filter(m => m.jdId !== selectedJdId), ...response.results]);
-    } catch (error) {
-      console.error('Matching failed:', error);
+    } catch {
+      toast.error('匹配失败，请重试');
     } finally {
       setMatching(false);
+      setMatchProgress(null);
     }
   };
 
   const handleScoreSingle = async (resumeId: string) => {
     if (!selectedJdId) {
-      alert('请先选择一个职位');
+      toast.warning('请先选择一个职位');
       return;
     }
 
     setScoringResumeId(resumeId);
     try {
       const result = await api.scoreSingleResume(resumeId, selectedJdId);
+      toast.success('评分完成');
       setMatchResults(prev => [
         ...prev.filter(m => !(m.resumeId === resumeId && m.jdId === selectedJdId)),
         result
       ]);
-    } catch (error) {
-      console.error('Score failed:', error);
-      alert('评分失败，请重试');
+    } catch {
+      toast.error('评分失败，请重试');
     } finally {
       setScoringResumeId(null);
     }
   };
 
+  const handleRetry = async (resumeId: string) => {
+    setRetryingId(resumeId);
+    try {
+      const updated = await api.retryResumeParse(resumeId);
+      updateResume(resumeId, updated);
+      toast.success('简历重新解析完成');
+    } catch {
+      toast.error('重新解析失败');
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
   const handleDelete = async (id: string) => {
-    if (confirm('确定要删除这份简历吗？')) {
-      try {
-        await api.deleteResume(id);
-        removeResume(id);
-      } catch (error) {
-        console.error('Delete failed:', error);
+    const confirmed = await confirmAsync('确定要删除这份简历吗？');
+    if (!confirmed) return;
+    try {
+      await api.deleteResume(id);
+      const isLastOnPage = sortedResumes.length <= 1;
+      removeResume(id);
+      if (isLastOnPage && page > 1) {
+        const newPage = page - 1;
+        setPage(newPage);
+        const data = await api.getResumes({ page: newPage, pageSize: PAGE_SIZE, jdId: selectedJdId || undefined });
+        setResumes(data.items);
+        setResumeTotal(data.total);
       }
+      toast.success('简历已删除');
+    } catch {
+      toast.error('删除失败，请重试');
     }
   };
 
@@ -189,13 +221,24 @@ export default function ResumesPage() {
     try {
       await api.deleteFailedUpload(id);
       setFailedUploads(failedUploads.filter(f => f.id !== id));
-    } catch (error) {
-      console.error('Delete failed upload failed:', error);
+    } catch {
+      toast.error('删除失败记录失败');
     }
   };
 
-  const parsingCount = filteredResumes.filter(r => r.parseStatus === 'parsing').length;
-  const completedCount = filteredResumes.filter(r => r.parseStatus === 'completed').length;
+  const handlePageChange = async (newPage: number) => {
+    setPage(newPage);
+    try {
+      const data = await api.getResumes({ page: newPage, pageSize: PAGE_SIZE, jdId: selectedJdId || undefined });
+      setResumes(data.items);
+      setResumeTotal(data.total);
+    } catch {
+      toast.error('加载失败');
+    }
+  };
+
+  const parsingCount = resumes.filter(r => r.parseStatus === 'parsing').length;
+  const completedCount = resumes.filter(r => r.parseStatus === 'completed').length;
 
   return (
     <div>
@@ -203,7 +246,7 @@ export default function ResumesPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">简历列表</h1>
           <p className="text-gray-600">
-            共 {filteredResumes.length} 份简历
+            共 {resumeTotal} 份简历
             {parsingCount > 0 && (
               <span className="ml-2 text-amber-600">
                 ({parsingCount} 份解析中)
@@ -211,24 +254,43 @@ export default function ResumesPage() {
             )}
           </p>
         </div>
-        {filteredResumes.length > 0 && (
-          <button
-            onClick={handleMatch}
-            disabled={matching || completedCount === 0 || !selectedJdId}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-secondary hover:bg-blue-600 transition-colors disabled:opacity-50"
-          >
-            {matching ? (
-              <>
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                匹配中...
-              </>
-            ) : (
-              <>
-                <Filter className="h-4 w-4 mr-2" />
-                开始匹配
-              </>
+        {resumeTotal > 0 && (
+          <div className="flex items-center space-x-4">
+            {matching && matchProgress && matchProgress.total > 0 && (
+              <div className="flex items-center space-x-3">
+                <div className="w-48">
+                  <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
+                    <span>匹配进度</span>
+                    <span>{matchProgress.completed}/{matchProgress.total}</span>
+                  </div>
+                  <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-secondary transition-all duration-500"
+                      style={{ width: `${(matchProgress.completed / matchProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+                <Loader2 className="h-4 w-4 text-secondary animate-spin" />
+              </div>
             )}
-          </button>
+            <button
+              onClick={handleMatch}
+              disabled={matching || completedCount === 0 || !selectedJdId}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-secondary hover:bg-blue-600 transition-colors disabled:opacity-50"
+            >
+              {matching ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  匹配中...
+                </>
+              ) : (
+                <>
+                  <Filter className="h-4 w-4 mr-2" />
+                  开始匹配
+                </>
+              )}
+            </button>
+          </div>
         )}
       </div>
 
@@ -284,7 +346,7 @@ export default function ResumesPage() {
         )}
       </div>
 
-      {filteredResumes.length === 0 ? (
+      {resumes.length === 0 ? (
         <div className="text-center py-16">
           <Users className="mx-auto h-16 w-16 text-gray-400 mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">
@@ -433,6 +495,20 @@ export default function ResumesPage() {
                     >
                       <Eye className="h-5 w-5" />
                     </Link>
+                    {isFailed && (
+                      <button
+                        onClick={() => handleRetry(resume.id)}
+                        disabled={retryingId === resume.id}
+                        className="p-2 text-amber-500 hover:text-amber-600 transition-colors"
+                        title="重新解析"
+                      >
+                        {retryingId === resume.id ? (
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-5 w-5" />
+                        )}
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDelete(resume.id)}
                       className="p-2 text-gray-400 hover:text-red-500 transition-colors"
@@ -445,6 +521,16 @@ export default function ResumesPage() {
             );
           })}
         </div>
+      )}
+
+      {resumeTotal > PAGE_SIZE && (
+        <Pagination
+          page={page}
+          totalPages={Math.ceil(resumeTotal / PAGE_SIZE)}
+          total={resumeTotal}
+          pageSize={PAGE_SIZE}
+          onPageChange={handlePageChange}
+        />
       )}
 
       {failedUploads.length > 0 && (

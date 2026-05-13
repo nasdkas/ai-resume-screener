@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, CheckCircle, XCircle, FileText, Loader2, Briefcase, ChevronDown } from 'lucide-react';
+import { usePolling } from '../hooks/usePolling';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { UploadResult as UploadResultType } from '../types';
@@ -9,6 +10,7 @@ export default function UploadPage() {
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadResults, setUploadResults] = useState<UploadResultType[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [selectedJdId, setSelectedJdId] = useState<string | null>(null);
   const [jdDropdownOpen, setJdDropdownOpen] = useState(false);
   const addResume = useAppStore((state) => state.addResume);
@@ -17,7 +19,6 @@ export default function UploadPage() {
   const jds = useAppStore((state) => state.jds);
   const setJDs = useAppStore((state) => state.setJDs);
   const navigate = useNavigate();
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const uploadedIds = uploadResults
@@ -36,7 +37,7 @@ export default function UploadPage() {
     const loadJDs = async () => {
       try {
         const data = await api.getJDs();
-        setJDs(data);
+        setJDs(data.items);
       } catch {
         console.log('Failed to load JDs');
       }
@@ -54,7 +55,7 @@ export default function UploadPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const pollParsingResumes = useCallback(async () => {
+  usePolling(async () => {
     for (const id of uploadedIds) {
       const current = resumes.find(r => r.id === id);
       if (!current) continue;
@@ -67,53 +68,43 @@ export default function UploadPage() {
           updateResume(id, fresh);
         }
       } catch {
-        console.error(`Failed to poll resume ${id}`);
+        // silent — polling errors are expected during parsing
       }
     }
-  }, [uploadedIds, resumes, updateResume]);
-
-  useEffect(() => {
-    if (hasParsing) {
-      if (pollingRef.current) return;
-      pollingRef.current = setInterval(pollParsingResumes, 3000);
-    } else {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    }
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [hasParsing, pollParsingResumes]);
+  }, hasParsing);
 
   const handleFiles = async (files: File[]) => {
     if (files.length === 0) return;
 
     setUploading(true);
     setUploadResults([]);
+    setUploadProgress({ current: 0, total: files.length });
 
-    try {
-      const response = await api.uploadResumesBatch(files, selectedJdId || undefined);
-      setUploadResults(response.results);
+    const results: UploadResultType[] = [];
 
-      const submittedResumes = response.results
-        .filter(r => r.success && r.resume)
-        .map(r => r.resume!);
-      submittedResumes.forEach(r => addResume(r));
-    } catch (error) {
-      console.error('Upload failed:', error);
-      setUploadResults(files.map(f => ({
-        filename: f.name,
-        success: false,
-        error: '上传请求失败'
-      })));
-    } finally {
-      setUploading(false);
+    for (let i = 0; i < files.length; i++) {
+      setUploadProgress({ current: i + 1, total: files.length });
+      try {
+        const response = await api.uploadResume(files[i], selectedJdId || undefined);
+        const result: UploadResultType = {
+          filename: files[i].name,
+          success: true,
+          resume: response.resume,
+        };
+        results.push(result);
+        addResume(response.resume);
+      } catch {
+        results.push({
+          filename: files[i].name,
+          success: false,
+          error: '上传失败',
+        });
+      }
+      setUploadResults([...results]);
     }
+
+    setUploadProgress(null);
+    setUploading(false);
   };
 
   const onDragOver = (e: React.DragEvent) => {
@@ -233,9 +224,23 @@ export default function UploadPage() {
         <Upload className={`mx-auto h-16 w-16 mb-4 ${dragOver ? 'text-secondary' : 'text-gray-400'}`} />
 
         {uploading ? (
-          <div className="space-y-2">
-            <p className="text-lg text-gray-600">正在上传文件...</p>
-            <div className="animate-pulse h-2 bg-gray-200 rounded w-48 mx-auto"></div>
+          <div className="space-y-3">
+            <p className="text-lg text-gray-600">
+              正在上传文件
+              {uploadProgress && (
+                <span className="text-gray-400"> ({uploadProgress.current}/{uploadProgress.total})</span>
+              )}
+            </p>
+            {uploadProgress && (
+              <div className="w-64 mx-auto">
+                <div className="h-2.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-secondary transition-all duration-300"
+                    style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div>
@@ -260,11 +265,11 @@ export default function UploadPage() {
         )}
       </div>
 
-      {hasResults && !uploading && (
+      {hasResults && (
         <div className="mt-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-gray-900">上传结果</h2>
-            {successCount > 0 && !hasParsing && (
+            {successCount > 0 && !hasParsing && !uploading && (
               <button
                 onClick={() => navigate(selectedJdId ? `/resumes` : '/resumes')}
                 className="text-sm text-secondary hover:text-blue-600 font-medium"

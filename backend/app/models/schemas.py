@@ -26,6 +26,17 @@ class ResumeCreate(ResumeBase):
     pass
 
 
+class ResumeUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    skills: Optional[List[str]] = None
+    experience: Optional[int] = None
+    education: Optional[str] = None
+    summary: Optional[str] = None
+    rawText: Optional[str] = None
+
+
 class Resume(ResumeBase):
     id: str
     createdAt: datetime
@@ -121,6 +132,22 @@ class UploadResult(BaseModel):
 
 class BatchUploadResponse(BaseModel):
     results: List[UploadResult]
+
+
+class PaginatedResumes(BaseModel):
+    items: List[Resume]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class PaginatedJDs(BaseModel):
+    items: List[JD]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class FailedUpload(BaseModel):

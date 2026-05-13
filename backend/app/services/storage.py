@@ -242,6 +242,32 @@ def get_all_resumes() -> List[Dict[str, Any]]:
         conn.close()
 
 
+def get_all_resumes_paginated(page: int = 1, page_size: int = 20, jd_id: Optional[str] = None):
+    """Returns (items, total_count) with LIMIT/OFFSET pagination."""
+    conn = _get_conn()
+    try:
+        offset = (page - 1) * page_size
+        conditions = []
+        params: list = []
+        if jd_id:
+            conditions.append("jdId=?")
+            params.append(jd_id)
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        count_row = conn.execute(
+            f"SELECT COUNT(*) FROM resumes {where_clause}", params
+        ).fetchone()
+        total = count_row[0]
+
+        rows = conn.execute(
+            f"SELECT * FROM resumes {where_clause} ORDER BY createdAt DESC LIMIT ? OFFSET ?",
+            params + [page_size, offset]
+        ).fetchall()
+        return _rows_to_list(rows), total
+    finally:
+        conn.close()
+
+
 def get_resume_by_id(resume_id: str) -> Optional[Dict[str, Any]]:
     return _get_by_id('resumes', resume_id)
 
@@ -278,6 +304,22 @@ def get_all_jds() -> List[Dict[str, Any]]:
     try:
         rows = conn.execute("SELECT * FROM jds ORDER BY createdAt DESC").fetchall()
         return _rows_to_list(rows)
+    finally:
+        conn.close()
+
+
+def get_all_jds_paginated(page: int = 1, page_size: int = 50):
+    """Returns (items, total_count) with LIMIT/OFFSET pagination."""
+    conn = _get_conn()
+    try:
+        offset = (page - 1) * page_size
+        count_row = conn.execute("SELECT COUNT(*) FROM jds").fetchone()
+        total = count_row[0]
+        rows = conn.execute(
+            "SELECT * FROM jds ORDER BY createdAt DESC LIMIT ? OFFSET ?",
+            (page_size, offset)
+        ).fetchall()
+        return _rows_to_list(rows), total
     finally:
         conn.close()
 

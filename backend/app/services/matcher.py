@@ -5,6 +5,23 @@ from .llm_service import match_resume_with_jd, async_match_resume_with_jd
 
 BATCH_SIZE = 3
 
+# In-memory matching progress tracking per JD
+_matching_progress: Dict[str, Dict[str, int]] = {}
+
+
+def init_match_progress(jd_id: str, total: int):
+    _matching_progress[jd_id] = {'total': total, 'completed': 0}
+
+
+def update_match_progress(jd_id: str):
+    progress = _matching_progress.get(jd_id)
+    if progress:
+        progress['completed'] += 1
+
+
+def get_match_progress(jd_id: str) -> Optional[Dict[str, int]]:
+    return _matching_progress.get(jd_id)
+
 
 def match_single_resume(resume_id: str, jd_id: str) -> Dict[str, Any]:
     resume = get_resume_by_id(resume_id)
@@ -130,6 +147,8 @@ async def _match_one_resume(resume: dict, jd_id: str, jd_description: str, jd_ke
     except Exception as e:
         print(f"匹配简历 {resume['id']} 失败: {e}")
         return None
+    finally:
+        update_match_progress(jd_id)
 
 
 async def async_match_all_resumes(jd_id: str, resume_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -153,6 +172,7 @@ async def async_match_all_resumes(jd_id: str, resume_ids: Optional[List[str]] = 
             new_resumes.append(resume)
 
     if new_resumes:
+        init_match_progress(jd_id, len(new_resumes))
         tasks = [
             _match_one_resume(resume, jd_id, jd['description'], jd['keywords'], jd.get('scoringCriteria', []))
             for resume in new_resumes
@@ -163,6 +183,8 @@ async def async_match_all_resumes(jd_id: str, resume_ids: Optional[List[str]] = 
             for result in batch_results:
                 if result:
                     existing_results.append(result)
+    else:
+        init_match_progress(jd_id, 0)
 
     existing_results.sort(key=lambda x: x['overallScore'], reverse=True)
     return existing_results

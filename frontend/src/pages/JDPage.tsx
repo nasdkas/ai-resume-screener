@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Plus, Save, CheckCircle, Trash2, Edit2, X, Briefcase } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
+import { toast } from '../lib/toast';
+import { confirmAsync } from '../components/ConfirmDialog';
 import { JD, ScoringCriterion } from '../types';
 
 interface JDFormData {
@@ -32,7 +34,7 @@ export default function JDPage() {
     const loadJDs = async () => {
       try {
         const data = await api.getJDs();
-        setJDs(data);
+        setJDs(data.items);
       } catch (error) {
         console.log('Failed to load JDs');
       }
@@ -119,15 +121,16 @@ export default function JDPage() {
       setForm(emptyForm);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (error) {
-      console.error('Save failed:', error);
+    } catch {
+      toast.error('保存职位失败');
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = async (jd: JD) => {
-    if (!confirm(`确定要删除职位"${jd.title}"吗？相关的匹配结果也会被删除。`)) return;
+    const confirmed = await confirmAsync(`确定要删除职位"${jd.title}"吗？相关的匹配结果也会被删除。`);
+    if (!confirmed) return;
     try {
       await api.deleteJD(jd.id);
       removeJD(jd.id);
@@ -136,7 +139,8 @@ export default function JDPage() {
         setForm(emptyForm);
       }
     } catch (error) {
-      console.error('Delete failed:', error);
+      toast.error('删除失败');
+      console.error(error);
     }
   };
 

@@ -55,6 +55,11 @@ export interface MatchResult {
   createdAt: string;
 }
 
+export interface UploadResponse {
+  success: boolean;
+  resume: Resume;
+}
+
 export interface UploadResult {
   filename: string;
   success: boolean;
@@ -81,4 +86,12 @@ export interface MatchRequest {
 export interface MatchResponse {
   success: boolean;
   results: MatchResult[];
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
