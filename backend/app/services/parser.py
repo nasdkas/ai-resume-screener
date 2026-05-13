@@ -8,6 +8,11 @@ from PyPDF2 import PdfReader
 from docx import Document
 
 
+def calc_text_quality(text: str) -> float:
+    """Public: calculate text quality score (0.0 - 1.0)."""
+    return _calc_text_quality(text)
+
+
 def _calc_text_quality(text: str) -> float:
     if not text or not text.strip():
         return 0.0
@@ -52,8 +57,6 @@ def _is_garbled_line(line: str) -> bool:
 
     if len(stripped) <= 2:
         if re.match(r'^[A-Z]{2}$', stripped):
-            return False
-        if re.match(r'^\d{4}$', stripped):
             return False
         return True
 
@@ -301,6 +304,7 @@ def _extract_pages_pymupdf(file_bytes: bytes) -> List[str]:
     except ImportError:
         raise RuntimeError("PyMuPDF 未安装")
     pages = []
+    doc = None
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         for page in doc:
@@ -311,9 +315,11 @@ def _extract_pages_pymupdf(file_bytes: bytes) -> List[str]:
             )
             page_text = page.get_text("text", flags=flags, sort=True)
             pages.append(page_text or "")
-        doc.close()
     except Exception as e:
         raise RuntimeError(f"PyMuPDF 解析失败: {e}")
+    finally:
+        if doc:
+            doc.close()
     return pages
 
 
@@ -364,12 +370,12 @@ def _extract_pdf_multi_engine(file_bytes: bytes) -> str:
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    text = ""
     docx_stream = io.BytesIO(file_bytes)
     doc = Document(docx_stream)
+    parts = []
     for paragraph in doc.paragraphs:
-        text += paragraph.text + "\n"
-    return text
+        parts.append(paragraph.text)
+    return "\n".join(parts)
 
 
 def extract_text(file_bytes: bytes, filename: str) -> Optional[str]:
@@ -388,13 +394,13 @@ if __name__ == '__main__':
     import os
     import sys
 
-    file_path = r'C:\Users\huai1\Desktop\【前端开发工程师_东莞 14-20K】李红阳 6年.pdf'
+    file_path = ""
 
     if len(sys.argv) >= 2:
         file_path = sys.argv[1]
 
-    if not os.path.isfile(file_path):
-        print(f"文件不存在: {file_path}")
+    if not file_path or not os.path.isfile(file_path):
+        print(f"用法: python parser.py <简历文件路径>")
         sys.exit(1)
 
     filename = os.path.basename(file_path)

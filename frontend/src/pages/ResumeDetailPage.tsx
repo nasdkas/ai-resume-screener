@@ -320,7 +320,12 @@ export default function ResumeDetailPage() {
                 </button>
               </div>
               <div className="flex justify-center mb-6">
-                <ScoreBadge score={matchResult.overallScore} size="lg" />
+                <ScoreBadge
+                  score={matchResult.overallScore}
+                  size="lg"
+                  band={matchResult.band}
+                  confidence={matchResult.confidence}
+                />
               </div>
 
               <div className="space-y-3">
@@ -338,7 +343,7 @@ export default function ResumeDetailPage() {
                 </div>
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600 flex items-center"><GraduationCap className="h-3.5 w-3.5 mr-1.5 text-green-500" />经验匹配 <span className="text-gray-400 ml-1">(20%)</span></span>
+                    <span className="text-gray-600 flex items-center"><GraduationCap className="h-3.5 w-3.5 mr-1.5 text-green-500" />经验匹配 <span className="text-gray-400 ml-1">(25%)</span></span>
                     <span className="font-medium">{matchResult.experienceMatch}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -350,7 +355,7 @@ export default function ResumeDetailPage() {
                 </div>
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600 flex items-center"><Target className="h-3.5 w-3.5 mr-1.5 text-amber-500" />关键词匹配 <span className="text-gray-400 ml-1">(20%)</span></span>
+                    <span className="text-gray-600 flex items-center"><Target className="h-3.5 w-3.5 mr-1.5 text-amber-500" />关键词匹配 <span className="text-gray-400 ml-1">(10%)</span></span>
                     <span className="font-medium">{matchResult.keywordMatch}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -362,7 +367,7 @@ export default function ResumeDetailPage() {
                 </div>
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600 flex items-center"><FolderOpen className="h-3.5 w-3.5 mr-1.5 text-cyan-500" />项目经验匹配 <span className="text-gray-400 ml-1">(15%)</span></span>
+                    <span className="text-gray-600 flex items-center"><FolderOpen className="h-3.5 w-3.5 mr-1.5 text-cyan-500" />项目经验匹配 <span className="text-gray-400 ml-1">(20%)</span></span>
                     <span className="font-medium">{matchResult.projectMatch}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">

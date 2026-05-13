@@ -314,7 +314,7 @@ export default function ResumesPage() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-start space-x-4">
                     {matchResult && (
-                      <ScoreBadge score={matchResult.overallScore} />
+                      <ScoreBadge score={matchResult.overallScore} confidence={matchResult.confidence} />
                     )}
                     <div>
                       <div className="flex items-center space-x-2">

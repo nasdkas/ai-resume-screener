@@ -2,9 +2,17 @@ import os
 import json
 import re
 import asyncio
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from dotenv import load_dotenv
 import datetime
+
+from .scoring import (
+    SCORING_VERSION, DIMENSIONS, DIMENSION_KEYS, SCORE_BANDS,
+    HARD_THRESHOLD_CAP, KEYWORD_WEIGHTS, DEFAULT_KEYWORD_IMPORTANCE,
+    calc_overall_score, clamp_score, get_score_band, calc_confidence,
+    format_dimensions_for_prompt, format_bands_for_prompt,
+    format_anchors_for_prompt, format_weights_for_prompt,
+)
 
 load_dotenv()
 
@@ -31,6 +39,7 @@ else:
         base_url=os.getenv('OPENAI_BASE_URL')
     )
 
+# ── JSON Schemas ──────────────────────────────────────────────────────
 
 PARSE_JSON_SCHEMA = {
     "type": "object",
@@ -86,6 +95,27 @@ MATCH_JSON_SCHEMA = {
                  "strengths", "weaknesses", "analysis"]
 }
 
+THRESHOLD_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "passed": {"type": "boolean"},
+                    "evidence": {"type": "string"}
+                },
+                "required": ["criterion", "passed", "evidence"]
+            }
+        },
+        "allPassed": {"type": "boolean"}
+    },
+    "required": ["checks", "allPassed"]
+}
+
+# ── LLM API helpers ───────────────────────────────────────────────────
 
 def _chat_completion(messages: list, temperature: float = 0.1, format: dict = None, think: bool = False) -> str:
     if LLM_PROVIDER == 'ollama':
@@ -93,9 +123,7 @@ def _chat_completion(messages: list, temperature: float = 0.1, format: dict = No
             'model': MODEL,
             'messages': messages,
             'think': think,
-            'options': {
-                'temperature': temperature
-            }
+            'options': {'temperature': temperature}
         }
         if format is not None:
             kwargs['format'] = format
@@ -123,9 +151,7 @@ async def _async_chat_completion(messages: list, temperature: float = 0.1, forma
             'model': MODEL,
             'messages': messages,
             'think': think,
-            'options': {
-                'temperature': temperature
-            }
+            'options': {'temperature': temperature}
         }
         if format is not None:
             kwargs['format'] = format
@@ -146,6 +172,8 @@ async def _async_chat_completion(messages: list, temperature: float = 0.1, forma
         print(response)
         return response.choices[0].message.content
 
+
+# ── Utility functions ─────────────────────────────────────────────────
 
 def _clean_json_response(text: str) -> str:
     text = text.strip()
@@ -179,136 +207,26 @@ def _safe_float(value, default=0.0) -> float:
     return default
 
 
-def _calc_overall_score(skill: float, experience: float, keyword: float, project: float, education: float) -> int:
-    return round(skill * 0.35 + experience * 0.20 + keyword * 0.20 + project * 0.15 + education * 0.10)
+def _safe_json_parse(text: str, context: str = "") -> dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"LLM 返回了非法的 JSON (context: {context}): {e}\n原始响应前200字符: {text[:200]}"
+        ) from e
 
 
-def _normalize_match_result(result: dict) -> Dict[str, Any]:
-    skill = _safe_float(result.get('skillMatch'), 50)
-    experience = _safe_float(result.get('experienceMatch'), 50)
-    keyword = _safe_float(result.get('keywordMatch'), 50)
-    project = _safe_float(result.get('projectMatch'), 50)
-    education = _safe_float(result.get('educationMatch'), 50)
-    llm_overall = _safe_float(result.get('overallScore'), None)
-    # if llm_overall is not None and llm_overall <= 50:
-    #     overall = int(llm_overall)
-    # else:
-    #     overall = _calc_overall_score(skill, experience, keyword, project, education)
-    if llm_overall:
-        overall = int(llm_overall)
-    else:
-        overall = _calc_overall_score(skill, experience, keyword, project, education)
-    return {
-        'overallScore': float(overall),
-        'skillMatch': skill,
-        'experienceMatch': experience,
-        'keywordMatch': keyword,
-        'projectMatch': project,
-        'educationMatch': education,
-        'keywordMatches': result.get('keywordMatches', []),
-        'missingKeywords': result.get('missingKeywords', []),
-        'strengths': result.get('strengths', []),
-        'weaknesses': result.get('weaknesses', []),
-        'analysis': result.get('analysis', '')
-    }
+def _contains_cjk(text: str) -> bool:
+    for ch in text:
+        if '一' <= ch <= '鿿' or '぀' <= ch <= 'ゟ' or '゠' <= ch <= 'ヿ':
+            return True
+    return False
 
 
-PARSE_SYSTEM_MSG = """简历信息提取器，summary内容尽量完善且不超300字，简历中未提到相关内容时，填空。只输出JSON，不输出其他内容。
-示例：李明，8年Java经验，精通Spring Boot、MySQL。本科，liming@example.com，13912345678。
-输出：{"name":"李明","email":"liming@example.com","phone":"13912345678","skills":["Java","Spring Boot","MySQL"],"experience":8,"education":"本科","summary":"8年Java经验的工程师，精通Spring Boot、MySQL，硕士学历。"}"""
-
-PARSE_PROMPT_TEMPLATE = """按示例格式提取。experience为纯数字，今天是{current_date}。
-
-{resume_text}"""
-
-MATCH_SYSTEM_MSG = """你是资深招聘匹配评估专家。你需要严格按评分规则对候选人进行客观评估。
-
-评分维度与权重：
-- skillMatch（技能匹配，权重35%）：候选人掌握的技能与JD要求的重合度，考虑技能深度与广度
-- experienceMatch（经验匹配，权重20%）：与岗位相关的项目经验、行业经验，而非单纯工作年限
-- keywordMatch（关键词匹配，权重20%）：简历中语义满足JD关键词的比例
-- projectMatch（项目经验匹配，权重15%）：候选人过往项目与JD业务场景的相关性
-- educationMatch（学历匹配，权重10%）：学历层次是否满足要求
-
-评分规则：
-1. 若候选人不满足【JD必须需求】中任意一项，overallScore打低分；只有完全满足所有必须需求时，才按上述权重加权计算overallScore并四舍五入
-2. keywordMatches：简历语义满足的JD关键词（含近义词、上下位词匹配）
-3. missingKeywords：简历明确不满足的JD关键词
-4. strengths：列出候选人2-4个核心优势
-5. weaknesses：列出候选人1-3个主要不足
-6. analysis：综合评价，包含技能匹配分析、经验适配度、发展潜力，不超350字
-
-注：今天是{current_date}
-只输出JSON，不输出其他内容。"""
-
-MATCH_PROMPT_TEMPLATE = """请严格按评分维度和权重评估候选人与岗位的匹配度。
-
-【候选人简历】
-{resume_text}
-
-【职位描述】
-{jd_description}
-
-【JD必须需求】（硬性门槛，不满足任意一项则直接低分）
-{scoring_criteria}
-
-【JD关键词】
-{keywords}
-
-评估要求：
-1. 仔细阅读简历，提取所有与JD相关的技能、经验和项目
-2. keywordMatches只填JD关键词中简历满足的，missingKeywords只填不满足的
-3. 关键词匹配要考虑语义：如JD要求"K8s"，简历提到"Kubernetes"算匹配
-4. projectMatch重点看项目内容与JD业务的相关性，而非项目数量
-5. **低分判定规则（最高优先级）**：
-   - 逐条检查【JD必须需求】中的每一项
-   - 只要任意一项在简历中明确不满足（或无法确认满足），则 **overallScore 直接打低分（满分 100 分）**，无需再执行下面的权重计算公式
-   - 此时打分评语必须明确指出哪项必须需求不满足
-6. 只有当候选人的简历 **完全满足所有【JD必须需求】** 时，才按以下公式计算 overallScore：
-   - overallScore = skillMatch×0.35 + experienceMatch×0.20 + keywordMatch×0.20 + projectMatch×0.15 + educationMatch×0.10
-   - 四舍五入取整，满分100分
-7. 分数要有区分度，不要集中在中段：优秀候选人应得高分（≥80），明显不匹配必须需求的得低分（≤60），完全满足必须需求但其他方面偏弱的得中等分（61-79）"""
-
-MERGE_PARSE_SYSTEM_MSG = """简历信息合并器，summary内容尽量完善且不超300字。只输出JSON，不输出其他内容。
-将两份部分解析结果合并为一份完整结果，按示例格式输出。"""
-
-MERGE_PARSE_PROMPT_TEMPLATE = """合并以下两份部分解析结果。skills取并集去重，experience取最大值，summary合并为更完整的描述，其余字段取非空值。
-
-结果1：{first}
-结果2：{second}"""
-
-MERGE_MATCH_SYSTEM_MSG = """简历评估结果合并器。将两份部分匹配结果合并为一份完整结果。经验是指与岗位匹配的技能经验及相关项目经验，而非单纯工作年限；analysis内容详细不超350字。只输出JSON，不输出其他内容。"""
-
-MERGE_MATCH_PROMPT_TEMPLATE = """合并以下两份部分匹配结果。
-
-合并规则：
-- skillMatch/experienceMatch/educationMatch/keywordMatch/projectMatch取最高分
-- overallScore合并规则：
-  - 如果两份结果都为低分，则合并为低分
-  - 存在合格分后才按权重重算：skillMatch×0.35 + experienceMatch×0.20 + keywordMatch×0.20 + projectMatch×0.15 + educationMatch×0.10，四舍五入取整
-- keywordMatches取并集去重
-- missingKeywords只保留两份都缺失的
-- strengths取并集去重，保留最多4条
-- weaknesses取并集去重，保留最多3条
-- analysis合并为更完整的评价
-注：今天是{current_date}
-
-结果1：{first}
-结果2：{second}"""
-
+# ── Text splitting (Ollama only) ──────────────────────────────────────
 
 MAX_PARSE_CHARS = 5000
 MAX_MATCH_CHARS = 5000
-
-
-def _format_scoring_criteria(criteria: list) -> str:
-    if not criteria:
-        return "无特殊要求，按默认权重评估(技能35%，经验20%，关键词20%，项目15%，学历10%)"
-    lines = []
-    for c in criteria:
-        item = c.get('item', '') if isinstance(c, dict) else str(c)
-        lines.append(f"- {item}")
-    return '\n'.join(lines)
 
 
 def _should_split(text_len: int, threshold: int) -> bool:
@@ -325,111 +243,98 @@ def _split_resume(text: str) -> Tuple[str, str]:
     return text[:split_pos], text[split_pos:]
 
 
+# ── Scoring criteria formatting ───────────────────────────────────────
 
-def _llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = MERGE_PARSE_PROMPT_TEMPLATE.format(
-        first=json.dumps(first, ensure_ascii=False),
-        second=json.dumps(second, ensure_ascii=False)
-    )
-    messages = [
-        {"role": "system", "content": MERGE_PARSE_SYSTEM_MSG},
-        {"role": "user", "content": prompt}
-    ]
-    result_text = _clean_json_response(_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
-    result = json.loads(result_text)
-    return {
-        'name': result.get('name', first.get('name', '未知')),
-        'email': result.get('email', first.get('email', '')),
-        'phone': result.get('phone', first.get('phone', '')),
-        'skills': result.get('skills', first.get('skills', [])),
-        'experience': _safe_int(result.get('experience'), first.get('experience', 0)),
-        'education': result.get('education', first.get('education', '')),
-        'summary': result.get('summary', first.get('summary', ''))
-    }
-
-
-async def _async_llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = MERGE_PARSE_PROMPT_TEMPLATE.format(
-        first=json.dumps(first, ensure_ascii=False),
-        second=json.dumps(second, ensure_ascii=False)
-    )
-    messages = [
-        {"role": "system", "content": MERGE_PARSE_SYSTEM_MSG},
-        {"role": "user", "content": prompt}
-    ]
-    result_text = _clean_json_response(await _async_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
-    result = json.loads(result_text)
-    return {
-        'name': result.get('name', first.get('name', '未知')),
-        'email': result.get('email', first.get('email', '')),
-        'phone': result.get('phone', first.get('phone', '')),
-        'skills': result.get('skills', first.get('skills', [])),
-        'experience': _safe_int(result.get('experience'), first.get('experience', 0)),
-        'education': result.get('education', first.get('education', '')),
-        'summary': result.get('summary', first.get('summary', ''))
-    }
-
-
-def _merge_split_keyword_results(first: Dict[str, Any], second: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-    first_matched_lower = {kw.lower() for kw in first.get('keywordMatches', [])}
-    second_matched_lower = {kw.lower() for kw in second.get('keywordMatches', [])}
-    all_matched_lower = first_matched_lower | second_matched_lower
-    all_keywords = list(dict.fromkeys(
-        first.get('keywordMatches', []) + first.get('missingKeywords', []) +
-        second.get('keywordMatches', []) + second.get('missingKeywords', [])
-    ))
-    merged_matched = []
-    merged_missing = []
-    for kw in all_keywords:
-        if kw.lower() in all_matched_lower:
-            merged_matched.append(kw)
+def _format_scoring_criteria(criteria: list) -> str:
+    if not criteria:
+        return "无特殊要求，按默认权重评估"
+    must_lines = []
+    prefer_lines = []
+    for c in criteria:
+        item = c.get('item', '') if isinstance(c, dict) else str(c)
+        weight = c.get('weight', '必须') if isinstance(c, dict) else '必须'
+        if weight == '必须':
+            must_lines.append(f"- {item}")
         else:
-            merged_missing.append(kw)
-    return merged_matched, merged_missing
+            prefer_lines.append(f"- {item}")
+    parts = []
+    if must_lines:
+        parts.append("【必须满足】（任意一项不满足则直接低分）：\n" + '\n'.join(must_lines))
+    if prefer_lines:
+        parts.append("【优先考虑】（满足更佳）：\n" + '\n'.join(prefer_lines))
+    return '\n\n'.join(parts) if parts else "无特殊要求"
 
 
-def _llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = MERGE_MATCH_PROMPT_TEMPLATE.format(
-        first=json.dumps(first, ensure_ascii=False),
-        second=json.dumps(second, ensure_ascii=False),
-        current_date=datetime.datetime.now().date()
-    )
-    messages = [
-        {"role": "system", "content": MERGE_MATCH_SYSTEM_MSG},
-        {"role": "user", "content": prompt}
+def _get_must_have_criteria(scoring_criteria: list) -> list:
+    """Extract only '必须' (must-have) criteria items."""
+    if not scoring_criteria:
+        return []
+    return [
+        c.get('item', '') if isinstance(c, dict) else str(c)
+        for c in scoring_criteria
+        if (c.get('weight', '必须') if isinstance(c, dict) else '必须') == '必须'
     ]
-    result_text = _clean_json_response(_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
-    result = json.loads(result_text)
-    merged_matched, merged_missing = _merge_split_keyword_results(first, second)
-    result['keywordMatches'] = merged_matched
-    result['missingKeywords'] = merged_missing
-    return _normalize_match_result(result)
 
 
-async def _async_llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = MERGE_MATCH_PROMPT_TEMPLATE.format(
-        first=json.dumps(first, ensure_ascii=False),
-        second=json.dumps(second, ensure_ascii=False),
-        current_date=datetime.datetime.now().date()
+# ── Normalization ─────────────────────────────────────────────────────
+
+def _normalize_match_result(result: dict, must_have_failed: bool = False,
+                            text_quality: float = 1.0, resume_char_count: int = 0,
+                            was_split: bool = False,
+                            threshold_passed: Optional[bool] = None,
+                            llm_threshold_match: Optional[bool] = None) -> Dict[str, Any]:
+    """Normalize and clamp scores, optionally apply threshold cap, compute confidence."""
+    skill = clamp_score(_safe_float(result.get('skillMatch'), 0))
+    experience = clamp_score(_safe_float(result.get('experienceMatch'), 0))
+    keyword = clamp_score(_safe_float(result.get('keywordMatch'), 0))
+    project = clamp_score(_safe_float(result.get('projectMatch'), 0))
+    education = clamp_score(_safe_float(result.get('educationMatch'), 0))
+
+    if must_have_failed:
+        skill = min(skill, HARD_THRESHOLD_CAP)
+        experience = min(experience, HARD_THRESHOLD_CAP)
+        keyword = min(keyword, HARD_THRESHOLD_CAP)
+        project = min(project, HARD_THRESHOLD_CAP)
+        education = min(education, HARD_THRESHOLD_CAP)
+
+    overall = clamp_score(calc_overall_score(skill, experience, project, keyword, education))
+
+    scores_dict = {
+        "skillMatch": skill, "experienceMatch": experience,
+        "projectMatch": project, "keywordMatch": keyword,
+        "educationMatch": education
+    }
+    confidence = calc_confidence(
+        text_quality=text_quality,
+        resume_char_count=resume_char_count,
+        was_split=was_split,
+        llm_model=MODEL,
+        scores=scores_dict,
+        threshold_passed=threshold_passed,
+        llm_threshold_match=llm_threshold_match,
     )
-    messages = [
-        {"role": "system", "content": MERGE_MATCH_SYSTEM_MSG},
-        {"role": "user", "content": prompt}
-    ]
-    result_text = _clean_json_response(await _async_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
-    result = json.loads(result_text)
-    merged_matched, merged_missing = _merge_split_keyword_results(first, second)
-    result['keywordMatches'] = merged_matched
-    result['missingKeywords'] = merged_missing
-    return _normalize_match_result(result)
+    band = get_score_band(overall)
+
+    return {
+        'overallScore': float(overall),
+        'skillMatch': skill,
+        'experienceMatch': experience,
+        'keywordMatch': keyword,
+        'projectMatch': project,
+        'educationMatch': education,
+        'keywordMatches': result.get('keywordMatches', []),
+        'missingKeywords': result.get('missingKeywords', []),
+        'strengths': result.get('strengths', []),
+        'weaknesses': result.get('weaknesses', []),
+        'analysis': result.get('analysis', ''),
+        'confidence': confidence,
+        'scoringVersion': SCORING_VERSION,
+        'thresholdPassed': threshold_passed,
+        'band': band['label'],
+    }
 
 
-def _contains_cjk(text: str) -> bool:
-    for ch in text:
-        if '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u309f' or '\u30a0' <= ch <= '\u30ff':
-            return True
-    return False
-
+# ── Keyword matching ──────────────────────────────────────────────────
 
 def _match_keywords(keywords: List[str], resume_text: str) -> Tuple[List[str], List[str]]:
     keyword_matches = []
@@ -480,17 +385,197 @@ def _merge_keyword_results(text_matched: List[str], text_missing: List[str],
     return merged_matched, merged_missing
 
 
-def _call_llm_parse(resume_text: str) -> Dict[str, Any]:
+def _calc_weighted_keyword_score(keywords: List[str], scoring_criteria: list,
+                                 resume_text: str) -> Tuple[float, List[str], List[str]]:
+    """Keyword score weighted by importance. Returns (score_0_100, matched, missing)."""
+    if not keywords:
+        return 100.0, [], []
+
+    importance_map = {}
+    for c in (scoring_criteria or []):
+        item = c.get('item', '') if isinstance(c, dict) else str(c)
+        weight = c.get('weight', '必须') if isinstance(c, dict) else '必须'
+        importance_map[item.lower()] = weight
+
+    resume_lower = resume_text.lower()
+    total_weight = 0.0
+    matched_weight = 0.0
+    matched = []
+    missing = []
+
+    for kw in keywords:
+        importance = importance_map.get(kw.lower(), DEFAULT_KEYWORD_IMPORTANCE)
+        w = KEYWORD_WEIGHTS.get(importance, 1.0)
+
+        kw_lower = kw.lower()
+        kw_words = kw_lower.split()
+        if len(kw_words) > 1:
+            is_match = all(w in resume_lower for w in kw_words)
+        elif _contains_cjk(kw):
+            is_match = kw_lower in resume_lower
+        else:
+            is_match = bool(re.search(r'\b' + re.escape(kw_lower) + r'\b', resume_lower))
+
+        if is_match:
+            matched_weight += w
+            matched.append(kw)
+        else:
+            missing.append(kw)
+        total_weight += w
+
+    if total_weight == 0:
+        return 100.0, matched, missing
+    return (matched_weight / total_weight * 100), matched, missing
+
+
+def _merge_split_keyword_results(first: Dict[str, Any], second: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    first_matched_lower = {kw.lower() for kw in first.get('keywordMatches', [])}
+    second_matched_lower = {kw.lower() for kw in second.get('keywordMatches', [])}
+    all_matched_lower = first_matched_lower | second_matched_lower
+    all_keywords = list(dict.fromkeys(
+        first.get('keywordMatches', []) + first.get('missingKeywords', []) +
+        second.get('keywordMatches', []) + second.get('missingKeywords', [])
+    ))
+    merged_matched = []
+    merged_missing = []
+    for kw in all_keywords:
+        if kw.lower() in all_matched_lower:
+            merged_matched.append(kw)
+        else:
+            merged_missing.append(kw)
+    return merged_matched, merged_missing
+
+
+# ── Prompt templates (weight/band placeholders filled at call time) ───
+
+PARSE_SYSTEM_MSG = """简历信息提取器，summary内容尽量完善且不超350字，简历中未提到相关内容时，填空。只输出JSON，不输出其他内容。
+示例：李明，8年Java经验，精通Spring Boot、MySQL。本科，liming@example.com，13912345678。
+输出：{"name":"李明","email":"liming@example.com","phone":"13912345678","skills":["Java","Spring Boot","MySQL"],"experience":8,"education":"本科","summary":"8年Java经验的工程师，精通Spring Boot、MySQL，硕士学历。"}"""
+
+PARSE_PROMPT_TEMPLATE = """按示例格式提取。experience为纯数字，今天是{current_date}。
+
+{resume_text}"""
+
+MATCH_SYSTEM_MSG = """你是资深招聘匹配评估专家。严格按评分规则客观评估，确保分数有区分度。
+
+评分维度与权重：
+{dimensions_desc}
+
+{bands_desc}
+
+硬性门槛规则：
+1. 逐条检查【必须满足】项，任意一项不满足 → 所有维度分数≤{threshold_cap}
+2. 只有全部【必须满足】项都满足时，才按权重正常评分
+
+keywordMatches/missingKeywords规则：
+- keywordMatches：简历语义满足的JD关键词（含近义词如K8s=Kubernetes）
+- missingKeywords：简历明确不满足的JD关键词
+
+strengths：列出2-4个核心优势（结合JD要求）
+weaknesses：列出1-3个主要不足（需具体、有依据）
+analysis：综合评价，包含匹配核心理由、关键差距、发展建议，不超350字
+
+{anchors}
+
+注：今天是{current_date}
+只输出JSON，不输出其他内容。"""
+
+MATCH_PROMPT_TEMPLATE = """严格按评分维度评估候选人与岗位的匹配度，确保分数体现真实差距。
+
+【候选人简历】
+{resume_text}
+
+【职位描述】
+{jd_description}
+
+{scoring_criteria}
+
+【JD关键词】
+{keywords}
+
+{threshold_context}
+
+【执行步骤】
+步骤1 — 阅读JD：理解岗位核心要求和业务场景
+步骤2 — 提取简历关键信息：技能、项目经验、教育背景、工作年限
+步骤3 — 检查硬性门槛：逐条检查【必须满足】项，在简历中找到对应证据
+步骤4 — 判断结果：
+  - 若任意【必须满足】项在简历中明确不满足 → 所有维度分数≤{threshold_cap}
+  - 若全部满足 → 按各维度的实际水平在0-100内评分
+步骤5 — 填写keywordMatches/missingKeywords：keywordMatches填语义满足的（含近义词），missingKeywords填不满足的
+步骤6 — 写analysis：包含硬性门槛检查结论、技能匹配度、经验适配度、发展潜力
+
+【评分参考】
+{weights_desc}
+
+分数要有区分度：优秀≥80分，中等61-79分，不足≤40分
+避免集中在70-85区间"""
+
+# ── Threshold check prompt ────────────────────────────────────────────
+
+THRESHOLD_SYSTEM_MSG = """你是招聘需求硬性门槛检查器。严格逐条检查简历是否满足硬性要求，给出明确证据。只输出JSON。"""
+
+THRESHOLD_PROMPT_TEMPLATE = """逐条检查以下【必须满足】项，在简历中寻找对应证据。
+
+【候选人简历】
+{resume_text}
+
+【职位描述】
+{jd_description}
+
+【必须满足项】
+{criteria_list}
+
+对每一项输出是否通过及证据。所有项必须全部通过才视为门槛通过。
+
+输出格式：
+{{"checks": [{{"criterion": "项目名称", "passed": true/false, "evidence": "简历中的证据或缺失说明"}}], "allPassed": true/false}}"""
+
+# ── Merge prompts ─────────────────────────────────────────────────────
+
+MERGE_PARSE_SYSTEM_MSG = """简历信息合并器，summary内容尽量完善且不超350字。只输出JSON，不输出其他内容。
+将两份部分解析结果合并为一份完整结果，按示例格式输出。"""
+
+MERGE_PARSE_PROMPT_TEMPLATE = """合并以下两份部分解析结果。skills取并集去重，experience取最大值，summary合并为更完整的描述，其余字段取非空值。
+
+结果1：{first}
+结果2：{second}"""
+
+MERGE_MATCH_SYSTEM_MSG = """简历评估结果合并器。将两份部分匹配结果合并为一份完整结果。经验是指与岗位匹配的技能经验及相关项目经验，而非单纯工作年限；analysis内容详细不超350字。只输出JSON，不输出其他内容。"""
+
+MERGE_MATCH_PROMPT_TEMPLATE = """合并以下两份部分匹配结果。
+
+合并规则：
+- skillMatch/experienceMatch/educationMatch/keywordMatch/projectMatch取最高分
+- overallScore合并规则：
+  - 如果两份结果都为低分，则合并为低分
+  - 存在合格分后才按权重重算：{weights_formula}，四舍五入取整
+- keywordMatches取并集去重
+- missingKeywords只保留两份都缺失的
+- strengths取并集去重，保留最多4条
+- weaknesses取并集去重，保留最多3条
+- analysis合并为更完整的评价
+注：今天是{current_date}
+
+结果1：{first}
+结果2：{second}"""
+
+
+# ── Prompt builders (shared by sync/async) ────────────────────────────
+
+def _build_parse_messages(resume_text: str) -> list:
     prompt = PARSE_PROMPT_TEMPLATE.format(
         resume_text=resume_text,
         current_date=datetime.datetime.now().date()
     )
-    messages = [
+    return [
         {"role": "system", "content": PARSE_SYSTEM_MSG},
         {"role": "user", "content": prompt}
     ]
-    result_text = _clean_json_response(_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
-    result = json.loads(result_text)
+
+
+def _parse_parse_result(result_text: str) -> Dict[str, Any]:
+    result = _safe_json_parse(_clean_json_response(result_text), "parse")
     return {
         'name': result.get('name', '未知'),
         'email': result.get('email', ''),
@@ -500,29 +585,290 @@ def _call_llm_parse(resume_text: str) -> Dict[str, Any]:
         'education': result.get('education', ''),
         'summary': result.get('summary', '')
     }
+
+
+def _build_threshold_messages(resume_text: str, jd_description: str,
+                              must_have_items: list) -> list:
+    criteria_list = '\n'.join(f"- {item}" for item in must_have_items)
+    prompt = THRESHOLD_PROMPT_TEMPLATE.format(
+        resume_text=resume_text[:8000],  # truncate for threshold check
+        jd_description=jd_description[:4000],
+        criteria_list=criteria_list
+    )
+    return [
+        {"role": "system", "content": THRESHOLD_SYSTEM_MSG},
+        {"role": "user", "content": prompt}
+    ]
+
+
+def _parse_threshold_result(result_text: str) -> Dict[str, Any]:
+    result = _safe_json_parse(_clean_json_response(result_text), "threshold")
+    return {
+        'checks': result.get('checks', []),
+        'allPassed': result.get('allPassed', True)
+    }
+
+
+def _build_match_messages(resume_text: str, jd_description: str, keywords: list,
+                          scoring_criteria: list = None,
+                          threshold_result: Optional[Dict[str, Any]] = None) -> list:
+    today = datetime.datetime.now().date()
+
+    # Build threshold context
+    if threshold_result is not None:
+        if threshold_result.get('allPassed'):
+            threshold_context = "【硬性门槛检查结果】✅ 已通过，全部必须满足项均已满足"
+        else:
+            failed_items = [c['criterion'] for c in threshold_result.get('checks', []) if not c['passed']]
+            threshold_context = f"【硬性门槛检查结果】❌ 未通过，以下必须满足项未达标: {', '.join(failed_items)}。所有维度分数限制在{HARD_THRESHOLD_CAP}以内。"
+    else:
+        threshold_context = ""
+
+    system_msg = MATCH_SYSTEM_MSG.format(
+        dimensions_desc=format_dimensions_for_prompt(),
+        bands_desc=format_bands_for_prompt(),
+        anchors=format_anchors_for_prompt(),
+        threshold_cap=HARD_THRESHOLD_CAP,
+        current_date=today
+    )
+    prompt = MATCH_PROMPT_TEMPLATE.format(
+        resume_text=resume_text,
+        jd_description=jd_description,
+        scoring_criteria=_format_scoring_criteria(scoring_criteria or []),
+        keywords=','.join(keywords) if keywords else '无',
+        threshold_context=threshold_context,
+        threshold_cap=HARD_THRESHOLD_CAP,
+        weights_desc=format_weights_for_prompt()
+    )
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": prompt}
+    ]
+
+
+def _parse_match_result(result_text: str, keywords: list, resume_text: str,
+                        scoring_criteria: list = None,
+                        must_have_failed: bool = False,
+                        text_quality: float = 1.0,
+                        was_split: bool = False,
+                        threshold_passed: Optional[bool] = None,
+                        llm_threshold_match: Optional[bool] = None) -> Dict[str, Any]:
+    """Parse LLM match result, merge keywords, apply threshold cap, compute confidence."""
+    result = _safe_json_parse(_clean_json_response(result_text), "match")
+
+    # Text-based keyword matching
+    text_matched, text_missing = _match_keywords(keywords, resume_text)
+    llm_matched = result.get('keywordMatches', [])
+    llm_missing = result.get('missingKeywords', [])
+    merged_matched, merged_missing = _merge_keyword_results(
+        text_matched, text_missing, llm_matched, llm_missing, keywords
+    )
+    result['keywordMatches'] = merged_matched
+    result['missingKeywords'] = merged_missing
+
+    # Weighted keyword score blended with LLM judgment (50/50)
+    weighted_kw_score, _, _ = _calc_weighted_keyword_score(
+        keywords, scoring_criteria or [], resume_text
+    )
+    llm_kw_score = clamp_score(_safe_float(result.get('keywordMatch'), 50))
+    result['keywordMatch'] = round(weighted_kw_score * 0.5 + llm_kw_score * 0.5)
+
+    # Detect LLM threshold judgment
+    llm_all_low = all(
+        _safe_float(result.get(k), 100) <= HARD_THRESHOLD_CAP
+        for k in ['skillMatch', 'experienceMatch', 'projectMatch', 'keywordMatch', 'educationMatch']
+    )
+
+    return _normalize_match_result(
+        result,
+        must_have_failed=must_have_failed,
+        text_quality=text_quality,
+        resume_char_count=len(resume_text),
+        was_split=was_split,
+        threshold_passed=threshold_passed,
+        llm_threshold_match=llm_all_low if must_have_failed else (not llm_all_low),
+    )
+
+
+def _build_merge_parse_messages(first: Dict[str, Any], second: Dict[str, Any]) -> list:
+    prompt = MERGE_PARSE_PROMPT_TEMPLATE.format(
+        first=json.dumps(first, ensure_ascii=False),
+        second=json.dumps(second, ensure_ascii=False)
+    )
+    return [
+        {"role": "system", "content": MERGE_PARSE_SYSTEM_MSG},
+        {"role": "user", "content": prompt}
+    ]
+
+
+def _parse_merge_parse_result(result_text: str, first: Dict[str, Any]) -> Dict[str, Any]:
+    result = _safe_json_parse(_clean_json_response(result_text), "merge_parse")
+    return {
+        'name': result.get('name', first.get('name', '未知')),
+        'email': result.get('email', first.get('email', '')),
+        'phone': result.get('phone', first.get('phone', '')),
+        'skills': result.get('skills', first.get('skills', [])),
+        'experience': _safe_int(result.get('experience'), first.get('experience', 0)),
+        'education': result.get('education', first.get('education', '')),
+        'summary': result.get('summary', first.get('summary', ''))
+    }
+
+
+def _build_merge_match_messages(first: Dict[str, Any], second: Dict[str, Any]) -> list:
+    weights_formula = " + ".join(
+        f"{key}×{info['weight']}" for key, info in DIMENSIONS.items()
+    )
+    today = datetime.datetime.now().date()
+    prompt = MERGE_MATCH_PROMPT_TEMPLATE.format(
+        first=json.dumps(first, ensure_ascii=False),
+        second=json.dumps(second, ensure_ascii=False),
+        weights_formula=weights_formula,
+        current_date=today
+    )
+    return [
+        {"role": "system", "content": MERGE_MATCH_SYSTEM_MSG},
+        {"role": "user", "content": prompt}
+    ]
+
+
+# ── LLM call functions (thin IO wrappers) ─────────────────────────────
+
+def _call_llm_parse(resume_text: str) -> Dict[str, Any]:
+    messages = _build_parse_messages(resume_text)
+    result_text = _chat_completion(
+        messages,
+        format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None
+    )
+    return _parse_parse_result(result_text)
 
 
 async def _async_call_llm_parse(resume_text: str) -> Dict[str, Any]:
-    prompt = PARSE_PROMPT_TEMPLATE.format(
-        resume_text=resume_text,
-        current_date=datetime.datetime.now().date()
+    messages = _build_parse_messages(resume_text)
+    result_text = await _async_chat_completion(
+        messages,
+        format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None
     )
-    messages = [
-        {"role": "system", "content": PARSE_SYSTEM_MSG},
-        {"role": "user", "content": prompt}
-    ]
-    result_text = _clean_json_response(await _async_chat_completion(messages, format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None))
-    result = json.loads(result_text)
-    return {
-        'name': result.get('name', '未知'),
-        'email': result.get('email', ''),
-        'phone': result.get('phone', ''),
-        'skills': result.get('skills', []),
-        'experience': _safe_int(result.get('experience'), 0),
-        'education': result.get('education', ''),
-        'summary': result.get('summary', '')
-    }
+    return _parse_parse_result(result_text)
 
+
+def _call_llm_threshold(resume_text: str, jd_description: str,
+                        must_have_items: list) -> Dict[str, Any]:
+    messages = _build_threshold_messages(resume_text, jd_description, must_have_items)
+    result_text = _chat_completion(
+        messages,
+        format=THRESHOLD_JSON_SCHEMA if LLM_JSON_MODE else None
+    )
+    return _parse_threshold_result(result_text)
+
+
+async def _async_call_llm_threshold(resume_text: str, jd_description: str,
+                                    must_have_items: list) -> Dict[str, Any]:
+    messages = _build_threshold_messages(resume_text, jd_description, must_have_items)
+    result_text = await _async_chat_completion(
+        messages,
+        format=THRESHOLD_JSON_SCHEMA if LLM_JSON_MODE else None
+    )
+    return _parse_threshold_result(result_text)
+
+
+def _call_llm_match(resume_text: str, jd_description: str, keywords: list,
+                    scoring_criteria: list = None,
+                    threshold_result: Optional[Dict[str, Any]] = None,
+                    text_quality: float = 1.0) -> Dict[str, Any]:
+    messages = _build_match_messages(
+        resume_text, jd_description, keywords, scoring_criteria, threshold_result
+    )
+    print("评分提示词：")
+    print(messages[-1]['content'] if messages else "")
+    result_text = _chat_completion(
+        messages,
+        format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None,
+        think=LLM_THINK_MODE
+    )
+    must_have_failed = (threshold_result is not None and not threshold_result.get('allPassed', True))
+    return _parse_match_result(
+        result_text, keywords, resume_text, scoring_criteria,
+        must_have_failed=must_have_failed,
+        text_quality=text_quality,
+        was_split=False,
+        threshold_passed=not must_have_failed if threshold_result else None,
+    )
+
+
+async def _async_call_llm_match(resume_text: str, jd_description: str, keywords: list,
+                                scoring_criteria: list = None,
+                                threshold_result: Optional[Dict[str, Any]] = None,
+                                text_quality: float = 1.0) -> Dict[str, Any]:
+    messages = _build_match_messages(
+        resume_text, jd_description, keywords, scoring_criteria, threshold_result
+    )
+    print("评分提示词：")
+    for message in messages:
+        print("role：", message['role'])
+        print("content", message['content'])
+        print('-'*100+'\n')
+    result_text = await _async_chat_completion(
+        messages,
+        format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None,
+        think=LLM_THINK_MODE
+    )
+    must_have_failed = (threshold_result is not None and not threshold_result.get('allPassed', True))
+    return _parse_match_result(
+        result_text, keywords, resume_text, scoring_criteria,
+        must_have_failed=must_have_failed,
+        text_quality=text_quality,
+        was_split=False,
+        threshold_passed=not must_have_failed if threshold_result else None,
+    )
+
+
+def _llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
+    messages = _build_merge_parse_messages(first, second)
+    result_text = _chat_completion(
+        messages,
+        format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None
+    )
+    return _parse_merge_parse_result(result_text, first)
+
+
+async def _async_llm_merge_parse(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
+    messages = _build_merge_parse_messages(first, second)
+    result_text = await _async_chat_completion(
+        messages,
+        format=PARSE_JSON_SCHEMA if LLM_JSON_MODE else None
+    )
+    return _parse_merge_parse_result(result_text, first)
+
+
+def _llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
+    messages = _build_merge_match_messages(first, second)
+    result_text = _chat_completion(
+        messages,
+        format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None,
+        think=LLM_THINK_MODE
+    )
+    result = _safe_json_parse(_clean_json_response(result_text), "merge_match")
+    merged_matched, merged_missing = _merge_split_keyword_results(first, second)
+    result['keywordMatches'] = merged_matched
+    result['missingKeywords'] = merged_missing
+    return _normalize_match_result(result, was_split=True)
+
+
+async def _async_llm_merge_match(first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
+    messages = _build_merge_match_messages(first, second)
+    result_text = await _async_chat_completion(
+        messages,
+        format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None,
+        think=LLM_THINK_MODE
+    )
+    result = _safe_json_parse(_clean_json_response(result_text), "merge_match")
+    merged_matched, merged_missing = _merge_split_keyword_results(first, second)
+    result['keywordMatches'] = merged_matched
+    result['missingKeywords'] = merged_missing
+    return _normalize_match_result(result, was_split=True)
+
+
+# ── Public API ────────────────────────────────────────────────────────
 
 def parse_resume_with_llm(resume_text: str) -> Dict[str, Any]:
     try:
@@ -538,74 +884,36 @@ def parse_resume_with_llm(resume_text: str) -> Dict[str, Any]:
         raise RuntimeError(f"简历解析失败: {e}")
 
 
-def _call_llm_match(resume_text: str, jd_description: str, keywords: list, scoring_criteria: list = None) -> Dict[str, Any]:
-    prompt = MATCH_PROMPT_TEMPLATE.format(
-        resume_text=resume_text,
-        jd_description=jd_description,
-        scoring_criteria=_format_scoring_criteria(scoring_criteria or []),
-        keywords=','.join(keywords) if keywords else '无'
-    )
-    messages = [
-        {"role": "system", "content": MATCH_SYSTEM_MSG.format(current_date=datetime.datetime.now().date())},
-        {"role": "user", "content": prompt}
-    ]
-    result_text = _clean_json_response(_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
-    result = json.loads(result_text)
-    text_matched, text_missing = _match_keywords(keywords, resume_text)
-    llm_matched = result.get('keywordMatches', [])
-    llm_missing = result.get('missingKeywords', [])
-    merged_matched, merged_missing = _merge_keyword_results(
-        text_matched, text_missing, llm_matched, llm_missing, keywords
-    )
-    result['keywordMatches'] = merged_matched
-    result['missingKeywords'] = merged_missing
-    keyword_ratio = len(merged_matched) / len(keywords) * 100 if keywords else 100
-    if not keywords:
-        result['keywordMatch'] = 100
-    else:
-        result['keywordMatch'] = max(_safe_float(result.get('keywordMatch')), keyword_ratio)
-    return _normalize_match_result(result)
-
-
-async def _async_call_llm_match(resume_text: str, jd_description: str, keywords: list, scoring_criteria: list = None) -> Dict[str, Any]:
-    prompt = MATCH_PROMPT_TEMPLATE.format(
-        resume_text=resume_text,
-        jd_description=jd_description,
-        scoring_criteria=_format_scoring_criteria(scoring_criteria or []),
-        keywords=','.join(keywords) if keywords else '无'
-    )
-    messages = [
-        {"role": "system", "content": MATCH_SYSTEM_MSG.format(current_date=datetime.datetime.now().date())},
-        {"role": "user", "content": prompt}
-    ]
-    print("评分提示词：")
-    print(prompt)
-    result_text = _clean_json_response(await _async_chat_completion(messages, format=MATCH_JSON_SCHEMA if LLM_JSON_MODE else None, think=LLM_THINK_MODE))
-    result = json.loads(result_text)
-    text_matched, text_missing = _match_keywords(keywords, resume_text)
-    llm_matched = result.get('keywordMatches', [])
-    llm_missing = result.get('missingKeywords', [])
-    merged_matched, merged_missing = _merge_keyword_results(
-        text_matched, text_missing, llm_matched, llm_missing, keywords
-    )
-    result['keywordMatches'] = merged_matched
-    result['missingKeywords'] = merged_missing
-    keyword_ratio = len(merged_matched) / len(keywords) * 100 if keywords else 100
-    if not keywords:
-        result['keywordMatch'] = 100
-    else:
-        result['keywordMatch'] = max(_safe_float(result.get('keywordMatch')), keyword_ratio)
-    return _normalize_match_result(result)
-
-
-def match_resume_with_jd(resume_text: str, jd_description: str, keywords: list, scoring_criteria: list = None) -> Dict[str, Any]:
+def match_resume_with_jd(resume_text: str, jd_description: str, keywords: list,
+                         scoring_criteria: list = None,
+                         text_quality: float = 1.0) -> Dict[str, Any]:
     try:
+        must_have_items = _get_must_have_criteria(scoring_criteria)
+        threshold_result = None
+
+        if must_have_items:
+            threshold_result = _call_llm_threshold(
+                resume_text, jd_description, must_have_items
+            )
+
         if not _should_split(len(resume_text), MAX_MATCH_CHARS):
-            return _call_llm_match(resume_text, jd_description, keywords, scoring_criteria)
+            return _call_llm_match(
+                resume_text, jd_description, keywords, scoring_criteria,
+                threshold_result=threshold_result,
+                text_quality=text_quality
+            )
 
         first_half, second_half = _split_resume(resume_text)
-        first_result = _call_llm_match(first_half, jd_description, keywords, scoring_criteria)
-        second_result = _call_llm_match(second_half, jd_description, keywords, scoring_criteria)
+        first_result = _call_llm_match(
+            first_half, jd_description, keywords, scoring_criteria,
+            threshold_result=threshold_result,
+            text_quality=text_quality
+        )
+        second_result = _call_llm_match(
+            second_half, jd_description, keywords, scoring_criteria,
+            threshold_result=threshold_result,
+            text_quality=text_quality
+        )
         return _llm_merge_match(first_result, second_result)
     except Exception as e:
         print(f"LLM匹配错误: {e}")
@@ -628,15 +936,37 @@ async def async_parse_resume_with_llm(resume_text: str) -> Dict[str, Any]:
         raise RuntimeError(f"简历解析失败: {e}")
 
 
-async def async_match_resume_with_jd(resume_text: str, jd_description: str, keywords: list, scoring_criteria: list = None) -> Dict[str, Any]:
+async def async_match_resume_with_jd(resume_text: str, jd_description: str, keywords: list,
+                                     scoring_criteria: list = None,
+                                     text_quality: float = 1.0) -> Dict[str, Any]:
     try:
+        must_have_items = _get_must_have_criteria(scoring_criteria)
+        threshold_result = None
+
+        if must_have_items:
+            threshold_result = await _async_call_llm_threshold(
+                resume_text, jd_description, must_have_items
+            )
+
         if not _should_split(len(resume_text), MAX_MATCH_CHARS):
-            return await _async_call_llm_match(resume_text, jd_description, keywords, scoring_criteria)
+            return await _async_call_llm_match(
+                resume_text, jd_description, keywords, scoring_criteria,
+                threshold_result=threshold_result,
+                text_quality=text_quality
+            )
 
         first_half, second_half = _split_resume(resume_text)
         first_result, second_result = await asyncio.gather(
-            _async_call_llm_match(first_half, jd_description, keywords, scoring_criteria),
-            _async_call_llm_match(second_half, jd_description, keywords, scoring_criteria)
+            _async_call_llm_match(
+                first_half, jd_description, keywords, scoring_criteria,
+                threshold_result=threshold_result,
+                text_quality=text_quality
+            ),
+            _async_call_llm_match(
+                second_half, jd_description, keywords, scoring_criteria,
+                threshold_result=threshold_result,
+                text_quality=text_quality
+            )
         )
         return await _async_llm_merge_match(first_result, second_result)
     except Exception as e:

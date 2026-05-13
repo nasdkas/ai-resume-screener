@@ -48,6 +48,10 @@ export interface MatchResult {
   strengths: string[];
   weaknesses: string[];
   analysis: string;
+  confidence?: number;
+  scoringVersion?: string;
+  thresholdPassed?: boolean;
+  band?: string;
   createdAt: string;
 }
 

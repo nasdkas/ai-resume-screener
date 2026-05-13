@@ -18,7 +18,7 @@ from app.services.storage import (
     save_failed_upload, get_all_failed_uploads, delete_failed_upload,
     delete_failed_uploads_by_filename
 )
-from app.services.parser import extract_text
+from app.services.parser import extract_text, calc_text_quality
 from app.services.llm_service import async_parse_resume_with_llm
 from app.services.matcher import async_match_all_resumes, async_match_single_resume
 from app.services.file_storage import save_resume_file, get_resume_file_info, delete_resume_file
@@ -75,6 +75,10 @@ def _to_match_result(r: dict) -> MatchResult:
         strengths=r.get('strengths', []),
         weaknesses=r.get('weaknesses', []),
         analysis=r['analysis'],
+        confidence=r.get('confidence'),
+        scoringVersion=r.get('scoringVersion'),
+        thresholdPassed=r.get('thresholdPassed'),
+        band=r.get('band'),
         createdAt=datetime.fromisoformat(r['createdAt'])
     )
 
@@ -110,7 +114,10 @@ BATCH_SIZE = 2
 async def _parse_resumes_batch_background(tasks: list):
     for i in range(0, len(tasks), BATCH_SIZE):
         batch = tasks[i:i + BATCH_SIZE]
-        await asyncio.gather(*batch, return_exceptions=True)
+        results = await asyncio.gather(*batch, return_exceptions=True)
+        for j, r in enumerate(results):
+            if isinstance(r, Exception):
+                print(f"批量任务 {i + j} 执行异常: {r}")
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -121,6 +128,8 @@ async def upload_resume(file: UploadFile = File(...), jdId: Optional[str] = Form
     if not raw_text:
         save_failed_upload(file.filename or "未知文件", "不支持的文件格式")
         raise HTTPException(status_code=400, detail="不支持的文件格式")
+
+    text_quality = calc_text_quality(raw_text)
 
     resume_data = {
         'filename': file.filename or "未知文件",
@@ -134,13 +143,19 @@ async def upload_resume(file: UploadFile = File(...), jdId: Optional[str] = Form
         'education': '',
         'summary': '',
         'parseStatus': 'parsing',
-        'jdId': jdId
+        'jdId': jdId,
+        'textQuality': text_quality
     }
 
     resume = save_resume(resume_data)
-    
-    save_resume_file(resume['id'], file_bytes, file.filename or "未知文件")
-    
+
+    try:
+        save_resume_file(resume['id'], file_bytes, file.filename or "未知文件")
+    except Exception as e:
+        delete_resume(resume['id'])
+        save_failed_upload(file.filename or "未知文件", f"文件存储失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"文件存储失败: {str(e)}")
+
     background_tasks.add_task(_parse_resume_background, resume['id'], raw_text, file.filename or "未知文件", jdId)
 
     return UploadResponse(success=True, resume=_to_resume(resume))
@@ -164,6 +179,8 @@ async def upload_resumes_batch(files: List[UploadFile] = File(...), jdId: Option
                 ))
                 continue
 
+            text_quality = calc_text_quality(raw_text)
+
             resume_data = {
                 'filename': file.filename or "未知文件",
                 'originalFilename': file.filename or "未知文件",
@@ -176,11 +193,16 @@ async def upload_resumes_batch(files: List[UploadFile] = File(...), jdId: Option
                 'education': '',
                 'summary': '',
                 'parseStatus': 'parsing',
-                'jdId': jdId
+                'jdId': jdId,
+                'textQuality': text_quality
             }
 
             resume = save_resume(resume_data)
-            save_resume_file(resume['id'], file_bytes, file.filename or "未知文件")
+            try:
+                save_resume_file(resume['id'], file_bytes, file.filename or "未知文件")
+            except Exception:
+                delete_resume(resume['id'])
+                raise
             parse_tasks.append(_parse_resume_background(resume['id'], raw_text, file.filename or "未知文件", jdId))
             results.append(UploadResult(
                 filename=file.filename,

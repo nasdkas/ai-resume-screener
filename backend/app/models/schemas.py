@@ -79,6 +79,10 @@ class MatchResultBase(BaseModel):
     strengths: List[str] = []
     weaknesses: List[str] = []
     analysis: str
+    confidence: Optional[float] = None
+    scoringVersion: Optional[str] = None
+    thresholdPassed: Optional[bool] = None
+    band: Optional[str] = None
 
 
 class MatchResultCreate(MatchResultBase):

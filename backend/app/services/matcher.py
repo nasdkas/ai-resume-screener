@@ -1,6 +1,6 @@
 import asyncio
 from typing import List, Dict, Any, Optional
-from .storage import get_jd_by_id, get_resume_by_id, get_all_resumes, save_match_result, get_match_result_by_resume_and_jd
+from .storage import get_jd_by_id, get_resume_by_id, get_all_resumes, save_match_result, get_match_result_by_resume_and_jd, update_resume
 from .llm_service import match_resume_with_jd, async_match_resume_with_jd
 
 BATCH_SIZE = 3
@@ -16,11 +16,13 @@ def match_single_resume(resume_id: str, jd_id: str) -> Dict[str, Any]:
     if resume.get('parseStatus', 'completed') != 'completed':
         raise ValueError("简历尚未解析完成，无法匹配")
 
+    text_quality = resume.get('textQuality', 1.0)
     match_result = match_resume_with_jd(
         resume['rawText'],
         jd['description'],
         jd['keywords'],
-        jd.get('scoringCriteria', [])
+        jd.get('scoringCriteria', []),
+        text_quality=text_quality
     )
 
     result_data = {
@@ -42,11 +44,13 @@ async def async_match_single_resume(resume_id: str, jd_id: str) -> Dict[str, Any
     if resume.get('parseStatus', 'completed') != 'completed':
         raise ValueError("简历尚未解析完成，无法匹配")
 
+    text_quality = resume.get('textQuality', 1.0)
     match_result = await async_match_resume_with_jd(
         resume['rawText'],
         jd['description'],
         jd['keywords'],
-        jd.get('scoringCriteria', [])
+        jd.get('scoringCriteria', []),
+        text_quality=text_quality
     )
 
     result_data = {
@@ -80,11 +84,13 @@ def match_all_resumes(jd_id: str, resume_ids: Optional[List[str]] = None) -> Lis
 
     for resume in new_resumes:
         try:
+            text_quality = resume.get('textQuality', 1.0)
             match_result = match_resume_with_jd(
                 resume['rawText'],
                 jd['description'],
                 jd['keywords'],
-                jd.get('scoringCriteria', [])
+                jd.get('scoringCriteria', []),
+                text_quality=text_quality
             )
 
             result_data = {
@@ -94,6 +100,7 @@ def match_all_resumes(jd_id: str, resume_ids: Optional[List[str]] = None) -> Lis
             }
 
             saved_result = save_match_result(result_data)
+            update_resume(resume['id'], {'matchStatus': 'completed'})
             existing_results.append(saved_result)
         except Exception as e:
             print(f"匹配简历 {resume['id']} 失败: {e}")
@@ -104,18 +111,22 @@ def match_all_resumes(jd_id: str, resume_ids: Optional[List[str]] = None) -> Lis
 
 async def _match_one_resume(resume: dict, jd_id: str, jd_description: str, jd_keywords: list, jd_scoring_criteria: list) -> Optional[Dict[str, Any]]:
     try:
+        text_quality = resume.get('textQuality', 1.0)
         match_result = await async_match_resume_with_jd(
             resume['rawText'],
             jd_description,
             jd_keywords,
-            jd_scoring_criteria
+            jd_scoring_criteria,
+            text_quality=text_quality
         )
         result_data = {
             'resumeId': resume['id'],
             'jdId': jd_id,
             **match_result
         }
-        return save_match_result(result_data)
+        saved = save_match_result(result_data)
+        update_resume(resume['id'], {'matchStatus': 'completed'})
+        return saved
     except Exception as e:
         print(f"匹配简历 {resume['id']} 失败: {e}")
         return None
